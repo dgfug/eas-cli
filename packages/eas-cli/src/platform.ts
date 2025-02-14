@@ -9,7 +9,7 @@ export const appPlatformDisplayNames: Record<AppPlatform, string> = {
 };
 
 export const appPlatformEmojis = {
-  [AppPlatform.Ios]: '🍎',
+  [AppPlatform.Ios]: '🍏',
   [AppPlatform.Android]: '🤖',
 };
 
@@ -45,6 +45,23 @@ export async function selectRequestedPlatformAsync(platform?: string): Promise<R
     ],
   });
   return requestedPlatform;
+}
+
+export async function selectPlatformAsync(platform?: string): Promise<Platform> {
+  if (platform && Object.values(Platform).includes(platform.toLowerCase() as Platform)) {
+    return platform.toLowerCase() as Platform;
+  }
+
+  const { resolvedPlatform } = await promptAsync({
+    type: 'select',
+    message: 'Select platform',
+    name: 'resolvedPlatform',
+    choices: [
+      { title: 'Android', value: Platform.ANDROID },
+      { title: 'iOS', value: Platform.IOS },
+    ],
+  });
+  return resolvedPlatform;
 }
 
 export function toPlatforms(requestedPlatform: RequestedPlatform): Platform[] {

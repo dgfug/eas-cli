@@ -1,15 +1,18 @@
 import assert from 'assert';
 import gql from 'graphql-tag';
 
-import { graphqlClient, withErrorHandlingAsync } from '../client';
-import { AppPrivacy, CreateAppMutation, CreateAppMutationVariables } from '../generated';
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
+import { withErrorHandlingAsync } from '../client';
+import { CreateAppMutation, CreateAppMutationVariables } from '../generated';
 
 export const AppMutation = {
-  async createAppAsync(appInput: {
-    accountId: string;
-    projectName: string;
-    privacy: AppPrivacy;
-  }): Promise<string> {
+  async createAppAsync(
+    graphqlClient: ExpoGraphqlClient,
+    appInput: {
+      accountId: string;
+      projectName: string;
+    }
+  ): Promise<string> {
     const data = await withErrorHandlingAsync(
       graphqlClient
         .mutation<CreateAppMutation, CreateAppMutationVariables>(

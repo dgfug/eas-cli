@@ -3,7 +3,19 @@ import { BuildProfile } from '@expo/eas-json';
 import assert from 'assert';
 import nullthrows from 'nullthrows';
 
+import { ActionInfo, IosActionType, Scope } from './Actions';
+import { Action, PressAnyKeyToContinue } from './HelperActions';
 import {
+  credentialsJsonActions,
+  getAscApiKeyActions,
+  getBuildCredentialsActions,
+  getPushKeyActions,
+  highLevelActions,
+} from './IosActions';
+import { SelectBuildProfileFromEasJson } from './SelectBuildProfileFromEasJson';
+import { SelectIosDistributionTypeGraphqlFromBuildProfile } from './SelectIosDistributionTypeGraphqlFromBuildProfile';
+import {
+  AccountFragment,
   AppleDistributionCertificateFragment,
   IosAppBuildCredentialsFragment,
   IosDistributionType as IosDistributionTypeGraphql,
@@ -11,21 +23,17 @@ import {
 import Log, { learnMore } from '../../log';
 import { resolveXcodeBuildContextAsync } from '../../project/ios/scheme';
 import { resolveTargetsAsync } from '../../project/ios/target';
-import {
-  getProjectAccountName,
-  promptToCreateProjectIfNotExistsAsync,
-} from '../../project/projectUtils';
+import { getOwnerAccountForProjectIdAsync } from '../../project/projectUtils';
 import { confirmAsync, promptAsync, selectAsync } from '../../prompts';
-import { Account, findAccountByName } from '../../user/Account';
-import { ensureActorHasUsername, ensureLoggedInAsync } from '../../user/actions';
-import { CredentialsContext } from '../context';
+import { ensureActorHasPrimaryAccount } from '../../user/actions';
+import { CredentialsContext, CredentialsContextProjectInfo } from '../context';
 import {
   AppStoreApiKeyPurpose,
   selectAscApiKeysFromAccountAsync,
 } from '../ios/actions/AscApiKeyUtils';
 import { AssignAscApiKey } from '../ios/actions/AssignAscApiKey';
 import { AssignPushKey } from '../ios/actions/AssignPushKey';
-import { getAppLookupParamsFromContext } from '../ios/actions/BuildCredentialsUtils';
+import { getAppLookupParamsFromContextAsync } from '../ios/actions/BuildCredentialsUtils';
 import { CreateAscApiKey } from '../ios/actions/CreateAscApiKey';
 import { CreateDistributionCertificate } from '../ios/actions/CreateDistributionCertificate';
 import { CreatePushKey } from '../ios/actions/CreatePushKey';
@@ -42,48 +50,52 @@ import { SetUpBuildCredentialsFromCredentialsJson } from '../ios/actions/SetUpBu
 import { SetUpProvisioningProfile } from '../ios/actions/SetUpProvisioningProfile';
 import { SetUpPushKey } from '../ios/actions/SetUpPushKey';
 import { UpdateCredentialsJson } from '../ios/actions/UpdateCredentialsJson';
-import { AppLookupParams } from '../ios/api/GraphqlClient';
-import { getManagedEntitlementsJsonAsync } from '../ios/appstore/entitlements';
+import { AppLookupParams } from '../ios/api/graphql/types/AppLookupParams';
 import { App, IosAppCredentialsMap, Target } from '../ios/types';
 import { displayIosCredentials } from '../ios/utils/printCredentials';
-import { ActionInfo, IosActionType, Scope } from './Actions';
-import { Action, PressAnyKeyToContinue } from './HelperActions';
-import {
-  credentialsJsonActions,
-  getAscApiKeyActions,
-  getBuildCredentialsActions,
-  getPushKeyActions,
-  highLevelActions,
-} from './IosActions';
-import { SelectBuildProfileFromEasJson } from './SelectBuildProfileFromEasJson';
-import { SelectIosDistributionTypeGraphqlFromBuildProfile } from './SelectIosDistributionTypeGraphqlFromBuildProfile';
 
 export class ManageIos {
-  constructor(private callingAction: Action, private projectDir: string) {}
+  constructor(
+    protected callingAction: Action,
+    protected projectDir: string
+  ) {}
 
   async runAsync(currentActions: ActionInfo[] = highLevelActions): Promise<void> {
-    const hasProjectContext = !!CredentialsContext.getExpoConfigInProject(this.projectDir);
-    const buildProfile = hasProjectContext
+    const buildProfile = this.callingAction.projectInfo
       ? await new SelectBuildProfileFromEasJson(this.projectDir, Platform.IOS).runAsync()
       : null;
+
+    let projectInfo: CredentialsContextProjectInfo | null = null;
+    if (this.callingAction.projectInfo) {
+      const { exp, projectId } = await this.callingAction.getDynamicPrivateProjectConfigAsync({
+        env: buildProfile?.env,
+      });
+      projectInfo = { exp, projectId };
+    }
+
     const ctx = new CredentialsContext({
       projectDir: process.cwd(),
-      user: await ensureLoggedInAsync(),
+      projectInfo,
+      user: this.callingAction.actor,
+      graphqlClient: this.callingAction.graphqlClient,
+      analytics: this.callingAction.analytics,
       env: buildProfile?.env,
+      nonInteractive: false,
+      vcsClient: this.callingAction.vcsClient,
     });
     const buildCredentialsActions = getBuildCredentialsActions(ctx);
     const pushKeyActions = getPushKeyActions(ctx);
     const ascApiKeyActions = getAscApiKeyActions(ctx);
 
     await ctx.bestEffortAppStoreAuthenticateAsync();
-    const accountName = ctx.hasProjectContext
-      ? getProjectAccountName(ctx.exp, ctx.user)
-      : ensureActorHasUsername(ctx.user);
 
-    const account = findAccountByName(ctx.user.accounts, accountName);
-    if (!account) {
-      throw new Error(`You do not have access to account: ${accountName}`);
-    }
+    const getAccountForProjectAsync = async (projectId: string): Promise<AccountFragment> => {
+      return await getOwnerAccountForProjectIdAsync(ctx.graphqlClient, projectId);
+    };
+
+    const account = ctx.hasProjectContext
+      ? await getAccountForProjectAsync(await ctx.getProjectIdAsync())
+      : ensureActorHasPrimaryAccount(ctx.user);
 
     let app = null;
     let targets = null;
@@ -100,9 +112,12 @@ export class ManageIos {
           assert(targets && app);
           const iosAppCredentialsMap: IosAppCredentialsMap = {};
           for (const target of targets) {
-            const appLookupParams = getAppLookupParamsFromContext(ctx, target);
+            const appLookupParams = await getAppLookupParamsFromContextAsync(ctx, target);
             iosAppCredentialsMap[target.targetName] =
-              await ctx.ios.getIosAppCredentialsWithCommonFieldsAsync(appLookupParams);
+              await ctx.ios.getIosAppCredentialsWithCommonFieldsAsync(
+                ctx.graphqlClient,
+                appLookupParams
+              );
           }
           displayIosCredentials(app, iosAppCredentialsMap, targets);
         }
@@ -137,7 +152,10 @@ export class ManageIos {
             currentActions = highLevelActions;
             continue;
           } else if (chosenAction === IosActionType.GoBackToCaller) {
-            return await this.callingAction.runAsync(ctx);
+            await this.callingAction.runAsync(ctx);
+            return;
+          } else if (chosenAction === IosActionType.Exit) {
+            return;
           }
         } else if (actionInfo.scope === Scope.Project) {
           assert(
@@ -167,44 +185,43 @@ export class ManageIos {
     }
   }
 
-  private async createProjectContextAsync(
+  protected async createProjectContextAsync(
     ctx: CredentialsContext,
-    account: Account,
+    account: AccountFragment,
     buildProfile: BuildProfile<Platform.IOS>
   ): Promise<{
     app: App;
     targets: Target[];
   }> {
     assert(ctx.hasProjectContext, 'createProjectContextAsync: must have project context.');
-    const maybeProjectId = await promptToCreateProjectIfNotExistsAsync(ctx.exp);
-    if (!maybeProjectId) {
-      throw new Error(
-        'Your project must be registered with EAS in order to use the credentials manager.'
-      );
-    }
 
-    const app = { account, projectName: ctx.exp.slug };
+    const exp = await ctx.getExpoConfigAsync();
+    const app = { account, projectName: exp.slug };
     const xcodeBuildContext = await resolveXcodeBuildContextAsync(
       {
         projectDir: ctx.projectDir,
         nonInteractive: ctx.nonInteractive,
-        exp: ctx.exp,
+        exp,
+        vcsClient: ctx.vcsClient,
       },
       buildProfile
     );
-    const targets = await resolveTargetsAsync(
-      { exp: ctx.exp, projectDir: ctx.projectDir },
-      xcodeBuildContext
-    );
+    const targets = await resolveTargetsAsync({
+      exp,
+      projectDir: ctx.projectDir,
+      xcodeBuildContext,
+      env: buildProfile.env,
+      vcsClient: ctx.vcsClient,
+    });
     return {
       app,
       targets,
     };
   }
 
-  private async runAccountSpecificActionAsync(
+  protected async runAccountSpecificActionAsync(
     ctx: CredentialsContext,
-    account: Account,
+    account: AccountFragment,
     action: IosActionType
   ): Promise<void> {
     if (action === IosActionType.RemoveDistributionCertificate) {
@@ -222,7 +239,7 @@ export class ManageIos {
     }
   }
 
-  private async runProjectSpecificActionAsync(
+  protected async runProjectSpecificActionAsync(
     ctx: CredentialsContext,
     app: App,
     targets: Target[],
@@ -235,12 +252,6 @@ export class ManageIos {
         targets,
         distribution: buildProfile.distribution,
         enterpriseProvisioning: buildProfile.enterpriseProvisioning,
-        iosCapabilitiesOptions: {
-          entitlements: await getManagedEntitlementsJsonAsync(
-            ctx.projectDir,
-            buildProfile.env ?? {}
-          ),
-        },
       }).runAsync(ctx);
       return;
     }
@@ -260,7 +271,7 @@ export class ManageIos {
     }
 
     const target = await this.selectTargetAsync(targets);
-    const appLookupParams = getAppLookupParamsFromContext(ctx, target);
+    const appLookupParams = await getAppLookupParamsFromContextAsync(ctx, target);
     switch (action) {
       case IosActionType.UseExistingDistributionCertificate: {
         const distCert = await selectValidDistributionCertificateAsync(ctx, appLookupParams);
@@ -269,6 +280,7 @@ export class ManageIos {
         }
         await this.setupProvisioningProfileWithSpecificDistCertAsync(
           ctx,
+          target,
           appLookupParams,
           distCert,
           distributionType
@@ -285,6 +297,7 @@ export class ManageIos {
         if (confirm) {
           await this.setupProvisioningProfileWithSpecificDistCertAsync(
             ctx,
+            target,
             appLookupParams,
             distCert,
             distributionType
@@ -294,6 +307,7 @@ export class ManageIos {
       }
       case IosActionType.RemoveProvisioningProfile: {
         const iosAppCredentials = await ctx.ios.getIosAppCredentialsWithCommonFieldsAsync(
+          ctx.graphqlClient,
           appLookupParams
         );
         const provisioningProfile = iosAppCredentials?.iosAppBuildCredentialsList.find(
@@ -316,7 +330,7 @@ export class ManageIos {
         return;
       }
       case IosActionType.SetUpPushKey: {
-        const setupPushKeyAction = await new SetUpPushKey(appLookupParams);
+        const setupPushKeyAction = new SetUpPushKey(appLookupParams);
         const isPushKeySetup = await setupPushKeyAction.isPushKeySetupAsync(ctx);
         if (isPushKeySetup) {
           Log.log(
@@ -386,8 +400,9 @@ export class ManageIos {
     }
   }
 
-  private async setupProvisioningProfileWithSpecificDistCertAsync(
+  protected async setupProvisioningProfileWithSpecificDistCertAsync(
     ctx: CredentialsContext,
+    target: Target,
     appLookupParams: AppLookupParams,
     distCert: AppleDistributionCertificateFragment,
     distributionType: IosDistributionTypeGraphql
@@ -395,18 +410,20 @@ export class ManageIos {
     Log.log(`Setting up ${appLookupParams.projectName} to use Distribution Certificate`);
     Log.log(`Creating provisioning profile...`);
     if (distributionType === IosDistributionTypeGraphql.AdHoc) {
-      return await new SetUpAdhocProvisioningProfile(
-        appLookupParams
-      ).runWithDistributionCertificateAsync(ctx, distCert);
+      return await new SetUpAdhocProvisioningProfile({
+        app: appLookupParams,
+        target,
+      }).runWithDistributionCertificateAsync(ctx, distCert);
     } else {
       return await new SetUpProvisioningProfile(
         appLookupParams,
+        target,
         distributionType
       ).createAndAssignProfileAsync(ctx, distCert);
     }
   }
 
-  private async selectTargetAsync(targets: Target[]): Promise<Target> {
+  protected async selectTargetAsync(targets: Target[]): Promise<Target> {
     if (targets.length === 1) {
       return targets[0];
     }

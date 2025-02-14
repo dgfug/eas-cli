@@ -1,17 +1,17 @@
-import { App, RequestContext, Session, User } from '@expo/apple-utils';
+import { RequestContext, Session, User } from '@expo/apple-utils';
 import { Platform } from '@expo/eas-build-job';
-import chalk from 'chalk';
 
+import { sanitizeLanguage } from './utils/language';
 import { getRequestContext } from '../../credentials/ios/appstore/authenticate';
 import {
   ensureAppExistsAsync,
   ensureBundleIdExistsWithNameAsync,
 } from '../../credentials/ios/appstore/ensureAppExists';
+import { ensureTestFlightGroupExistsAsync } from '../../credentials/ios/appstore/ensureTestFlightGroup';
 import Log from '../../log';
 import { getBundleIdentifierAsync } from '../../project/ios/bundleIdentifier';
 import { promptAsync } from '../../prompts';
 import { SubmissionContext } from '../context';
-import { sanitizeLanguage } from './utils/language';
 
 interface CreateAppOptions {
   appleId?: string;
@@ -24,7 +24,6 @@ interface CreateAppOptions {
 }
 
 type AppStoreResult = {
-  appleIdUsername: string;
   ascAppIdentifier: string;
 };
 
@@ -38,7 +37,7 @@ export async function ensureAppStoreConnectAppExistsAsync(
     bundleIdentifier:
       ctx.applicationIdentifierOverride ??
       ctx.profile.bundleIdentifier ??
-      (await getBundleIdentifierAsync(ctx.projectDir, exp)),
+      (await getBundleIdentifierAsync(ctx.projectDir, exp, ctx.vcsClient)),
     appName: appName ?? exp.name ?? (await promptForAppNameAsync()),
     language: sanitizeLanguage(language),
   };
@@ -67,60 +66,44 @@ async function createAppStoreConnectAppAsync(
     sku,
   } = options;
 
-  const authCtx = await ctx.credentialsCtx.appStore.ensureAuthenticatedAsync({
+  const userAuthCtx = await ctx.credentialsCtx.appStore.ensureUserAuthenticatedAsync({
     appleId,
     teamId: appleTeamId,
   });
-  const requestCtx = getRequestContext(authCtx);
+  const requestCtx = getRequestContext(userAuthCtx);
 
   Log.addNewLineIfNone();
 
   if (await isProvisioningAvailableAsync(requestCtx)) {
-    await ensureBundleIdExistsWithNameAsync(authCtx, {
+    await ensureBundleIdExistsWithNameAsync(userAuthCtx, {
       name: appName,
       bundleIdentifier: bundleId,
     });
   } else {
     Log.warn(
-      `Provisioning is not available for user "${authCtx.appleId}", skipping bundle identifier check.`
+      `Provisioning is not available for Apple User: ${userAuthCtx.appleId}, skipping bundle identifier check.`
     );
   }
 
-  let app: App | null = null;
+  const app = await ensureAppExistsAsync(userAuthCtx, {
+    name: appName,
+    language,
+    companyName,
+    bundleIdentifier: bundleId,
+    sku,
+  });
 
   try {
-    app = await ensureAppExistsAsync(authCtx, {
-      name: appName,
-      language,
-      companyName,
-      bundleIdentifier: bundleId,
-      sku,
-    });
+    await ensureTestFlightGroupExistsAsync(app);
   } catch (error: any) {
-    if (
-      // Name is invalid
-      error.message.match(
-        /App Name contains certain Unicode(.*)characters that are not permitted/
-      ) ||
-      // UnexpectedAppleResponse: An attribute value has invalid characters. - App Name contains certain Unicode symbols, emoticons, diacritics, special characters, or private use characters that are not permitted.
-      // Name is taken
-      error.message.match(/The App Name you entered is already being used/)
-      // UnexpectedAppleResponse: The provided entity includes an attribute with a value that has already been used on a different account. - The App Name you entered is already being used. If you have trademark rights to
-      // this name and would like it released for your use, submit a claim.
-    ) {
-      Log.addNewLineIfNone();
-      Log.warn(
-        `Change the name in your app config, or use a custom name with the ${chalk.bold(
-          '--app-name'
-        )} flag`
-      );
-      Log.newLine();
-    }
-    throw error;
+    // This process is not critical to the app submission so we shouldn't let it fail the entire process.
+    Log.error(
+      'Failed to create an internal TestFlight group. This can be done manually in the App Store Connect website.'
+    );
+    Log.error(error);
   }
 
   return {
-    appleIdUsername: authCtx.appleId,
     ascAppIdentifier: app.id,
   };
 }

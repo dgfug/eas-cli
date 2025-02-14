@@ -6,22 +6,21 @@ import nullthrows from 'nullthrows';
 
 import { IosAppBuildCredentialsFragment, IosDistributionType } from '../../../graphql/generated';
 import Log from '../../../log';
+import { getApplePlatformFromTarget } from '../../../project/ios/target';
 import { CredentialsContext } from '../../context';
-import { AppLookupParams } from '../api/GraphqlClient';
+import { AppLookupParams } from '../api/graphql/types/AppLookupParams';
 import { ProfileClass } from '../appstore/provisioningProfile';
+import { Target } from '../types';
 import { getP12CertFingerprint } from '../utils/p12Certificate';
 import { parse as parseProvisioningProfile } from '../utils/provisioningProfile';
 
 export async function validateProvisioningProfileAsync(
   ctx: CredentialsContext,
+  target: Target,
   app: AppLookupParams,
   buildCredentials: Partial<IosAppBuildCredentialsFragment> | null
 ): Promise<boolean> {
-  if (
-    !buildCredentials ||
-    !buildCredentials.distributionCertificate ||
-    !buildCredentials.provisioningProfile
-  ) {
+  if (!buildCredentials?.distributionCertificate || !buildCredentials.provisioningProfile) {
     return false;
   }
 
@@ -37,7 +36,7 @@ export async function validateProvisioningProfileAsync(
     return true;
   }
 
-  return await validateProvisioningProfileWithAppleAsync(ctx, app, buildCredentials);
+  return await validateProvisioningProfileWithAppleAsync(ctx, target, app, buildCredentials);
 }
 
 function validateProvisioningProfileWithoutApple(
@@ -75,7 +74,7 @@ function validateProvisioningProfileWithoutApple(
       Log.warn('Provisioning Profile has expired.');
       return false;
     }
-  } catch (error) {
+  } catch {
     Log.warn('Provisioning Profile is malformed.');
     return false;
   }
@@ -84,14 +83,17 @@ function validateProvisioningProfileWithoutApple(
 
 async function validateProvisioningProfileWithAppleAsync(
   ctx: CredentialsContext,
+  target: Target,
   app: AppLookupParams,
   buildCredentials: Partial<IosAppBuildCredentialsFragment>
 ): Promise<boolean> {
   assert(buildCredentials.provisioningProfile, 'Provisioning Profile must be defined');
   const { developerPortalIdentifier, provisioningProfile } = buildCredentials.provisioningProfile;
 
+  const applePlatform = getApplePlatformFromTarget(target);
   const profilesFromApple = await ctx.appStore.listProvisioningProfilesAsync(
     app.bundleIdentifier,
+    applePlatform,
     buildCredentials.iosDistributionType === IosDistributionType.AdHoc
       ? ProfileClass.Adhoc
       : ProfileClass.General

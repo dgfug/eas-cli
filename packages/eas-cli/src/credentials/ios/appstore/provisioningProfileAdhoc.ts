@@ -1,10 +1,12 @@
 import { Device, Profile, ProfileState, ProfileType, RequestContext } from '@expo/apple-utils';
 
-import { ora } from '../../../ora';
 import { ProvisioningProfile } from './Credentials.types';
-import { AuthCtx, getRequestContext } from './authenticate';
+import { getRequestContext } from './authenticate';
+import { AuthCtx } from './authenticateTypes';
 import { getBundleIdForIdentifierAsync, getProfilesForBundleIdAsync } from './bundleId';
 import { getDistributionCertificateAsync } from './distributionCertificate';
+import { ora } from '../../../ora';
+import { isAppStoreConnectTokenOnlyContext } from '../utils/authType';
 
 interface ProfileResults {
   didUpdate?: boolean;
@@ -23,10 +25,8 @@ async function registerMissingDevicesAsync(
   context: RequestContext,
   udids: string[]
 ): Promise<Device[]> {
-  const allIosProfileDevices = await Device.getAllIOSProfileDevicesAsync(context);
-  const alreadyAdded = allIosProfileDevices.filter(device =>
-    udids.includes(device.attributes.udid)
-  );
+  const allDevices = await Device.getAsync(context);
+  const alreadyAdded = allDevices.filter(device => udids.includes(device.attributes.udid));
   const alreadyAddedUdids = alreadyAdded.map(i => i.attributes.udid);
 
   await Promise.all(
@@ -44,17 +44,20 @@ async function registerMissingDevicesAsync(
   return alreadyAdded;
 }
 
-async function findProfileByBundleIdAsync(
+async function findProfileAsync(
   context: RequestContext,
-  bundleId: string,
-  certSerialNumber: string
+  {
+    bundleId,
+    certSerialNumber,
+    profileType,
+  }: { bundleId: string; certSerialNumber: string; profileType: ProfileType }
 ): Promise<{
   profile: Profile | null;
   didUpdate: boolean;
 }> {
   const expoProfiles = (await getProfilesForBundleIdAsync(context, bundleId)).filter(profile => {
     return (
-      profile.attributes.profileType === ProfileType.IOS_APP_ADHOC &&
+      profile.attributes.profileType === profileType &&
       profile.attributes.name.startsWith('*[expo]') &&
       profile.attributes.profileState !== ProfileState.EXPIRED
     );
@@ -89,9 +92,13 @@ async function findProfileByBundleIdAsync(
     }
     const profile = expoProfiles.sort(sortByExpiration)[expoProfiles.length - 1];
     profile.attributes.certificates = [distributionCertificate];
+
     return {
-      // This method does not support App Store Connect API.
-      profile: await profile.regenerateAsync(),
+      profile: isAppStoreConnectTokenOnlyContext(profile.context)
+        ? // Experimentally regenerate the provisioning profile using App Store Connect API.
+          await profile.regenerateManuallyAsync()
+        : // This method does not support App Store Connect API.
+          await profile.regenerateAsync(),
       didUpdate: true,
     };
   }
@@ -126,11 +133,13 @@ async function manageAdHocProfilesAsync(
     bundleId,
     certSerialNumber,
     profileId,
+    profileType,
   }: {
     udids: string[];
     bundleId: string;
     certSerialNumber: string;
     profileId?: string;
+    profileType: ProfileType;
   }
 ): Promise<ProfileResults> {
   // We register all missing devices on the Apple Developer Portal. They are identified by UDIDs.
@@ -149,7 +158,7 @@ async function manageAdHocProfilesAsync(
     }
   } else {
     // If no profile id is passed, try to find a suitable provisioning profile for the App ID.
-    const results = await findProfileByBundleIdAsync(context, bundleId, certSerialNumber);
+    const results = await findProfileAsync(context, { bundleId, certSerialNumber, profileType });
     existingProfile = results.profile;
     didUpdate = results.didUpdate;
   }
@@ -178,11 +187,17 @@ async function manageAdHocProfilesAsync(
     // We need to add new devices to the list and create a new provisioning profile.
     existingProfile.attributes.devices = devices;
 
-    // This method does not support App Store Connect API.
-    await existingProfile.regenerateAsync();
+    if (isAppStoreConnectTokenOnlyContext(existingProfile.context)) {
+      // Experimentally regenerate the provisioning profile using App Store Connect API.
+      await existingProfile.regenerateManuallyAsync();
+    } else {
+      // This method does not support App Store Connect API.
+      await existingProfile.regenerateAsync();
+    }
 
-    const updatedProfile = (await findProfileByBundleIdAsync(context, bundleId, certSerialNumber))
-      .profile;
+    const updatedProfile = (
+      await findProfileAsync(context, { bundleId, certSerialNumber, profileType })
+    ).profile;
     if (!updatedProfile) {
       throw new Error(
         `Failed to locate updated profile for bundle identifier "${bundleId}" and serial number "${certSerialNumber}"`
@@ -215,7 +230,7 @@ async function manageAdHocProfilesAsync(
     name: `*[expo] ${bundleId} AdHoc ${Date.now()}`,
     certificates: [distributionCertificate.id],
     devices: devices.map(device => device.id),
-    profileType: ProfileType.IOS_APP_ADHOC,
+    profileType,
   });
 
   return {
@@ -231,7 +246,8 @@ export async function createOrReuseAdhocProvisioningProfileAsync(
   authCtx: AuthCtx,
   udids: string[],
   bundleIdentifier: string,
-  distCertSerialNumber: string
+  distCertSerialNumber: string,
+  profileType: ProfileType
 ): Promise<ProvisioningProfile> {
   const spinner = ora(`Handling Apple ad hoc provisioning profiles`).start();
   try {
@@ -241,6 +257,7 @@ export async function createOrReuseAdhocProvisioningProfileAsync(
         udids,
         bundleId: bundleIdentifier,
         certSerialNumber: distCertSerialNumber,
+        profileType,
       });
 
     if (didCreate) {

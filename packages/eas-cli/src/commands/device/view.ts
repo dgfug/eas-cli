@@ -1,16 +1,19 @@
-import { getConfig } from '@expo/config';
-
 import EasCommand from '../../commandUtils/EasCommand';
 import { AppleDeviceQuery } from '../../credentials/ios/api/graphql/queries/AppleDeviceQuery';
 import formatDevice from '../../devices/utils/formatDevice';
 import Log from '../../log';
 import { ora } from '../../ora';
-import { findProjectRootAsync, getProjectAccountNameAsync } from '../../project/projectUtils';
+import { getOwnerAccountForProjectIdAsync } from '../../project/projectUtils';
 
 export default class DeviceView extends EasCommand {
-  static description = 'view a device for your project';
+  static override description = 'view a device for your project';
 
-  static args = [{ name: 'UDID' }];
+  static override args = [{ name: 'UDID' }];
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectId,
+    ...this.ContextOptions.LoggedIn,
+  };
 
   async runAsync(): Promise<void> {
     const { UDID } = (await this.parse(DeviceView)).args;
@@ -28,15 +31,22 @@ If you are not sure what is the UDID of the device you are looking for, run:
       );
       throw new Error('Device UDID is missing');
     }
-
-    const projectDir = await findProjectRootAsync();
-    const { exp } = getConfig(projectDir, { skipSDKVersionRequirement: true });
-    const accountName = await getProjectAccountNameAsync(exp);
+    const {
+      projectId,
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(DeviceView, {
+      nonInteractive: true,
+    });
+    const account = await getOwnerAccountForProjectIdAsync(graphqlClient, projectId);
 
     const spinner = ora().start(`Fetching device details for ${UDID}…`);
 
     try {
-      const device = await AppleDeviceQuery.getByDeviceIdentifierAsync(accountName, UDID);
+      const device = await AppleDeviceQuery.getByDeviceIdentifierAsync(
+        graphqlClient,
+        account.name,
+        UDID
+      );
 
       if (device) {
         spinner.succeed('Fetched device details');

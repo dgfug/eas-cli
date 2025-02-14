@@ -2,17 +2,27 @@ import { Platform } from '@expo/eas-build-job';
 import { BuildProfile } from '@expo/eas-json';
 import assert from 'assert';
 
+import { ActionInfo, AndroidActionType, Scope } from './Actions';
+import {
+  buildCredentialsActions,
+  credentialsJsonActions,
+  fcmActions,
+  gsaActions,
+  gsaKeyActionsForFcmV1,
+  gsaKeyActionsForSubmissions,
+  highLevelActions,
+} from './AndroidActions';
+import { CreateAndroidBuildCredentials } from './CreateAndroidBuildCredentials';
+import { Action, PressAnyKeyToContinue } from './HelperActions';
+import { SelectExistingAndroidBuildCredentials } from './SelectAndroidBuildCredentials';
+import { SelectBuildProfileFromEasJson } from './SelectBuildProfileFromEasJson';
+import { SetDefaultAndroidKeystore } from './SetDefaultAndroidKeystore';
 import Log, { learnMore } from '../../log';
 import { GradleBuildContext, resolveGradleBuildContextAsync } from '../../project/android/gradle';
-import {
-  getProjectAccountName,
-  promptToCreateProjectIfNotExistsAsync,
-} from '../../project/projectUtils';
 import { promptAsync } from '../../prompts';
-import { findAccountByName } from '../../user/Account';
-import { ensureActorHasUsername, ensureLoggedInAsync } from '../../user/actions';
 import { AssignFcm } from '../android/actions/AssignFcm';
-import { AssignGoogleServiceAccountKey } from '../android/actions/AssignGoogleServiceAccountKey';
+import { AssignGoogleServiceAccountKeyForFcmV1 } from '../android/actions/AssignGoogleServiceAccountKeyForFcmV1';
+import { AssignGoogleServiceAccountKeyForSubmissions } from '../android/actions/AssignGoogleServiceAccountKeyForSubmissions';
 import {
   canCopyLegacyCredentialsAsync,
   getAppLookupParamsFromContextAsync,
@@ -20,56 +30,51 @@ import {
 } from '../android/actions/BuildCredentialsUtils';
 import { CreateFcm } from '../android/actions/CreateFcm';
 import { CreateGoogleServiceAccountKey } from '../android/actions/CreateGoogleServiceAccountKey';
-import { CreateKeystore } from '../android/actions/CreateKeystore';
 import { DownloadKeystore } from '../android/actions/DownloadKeystore';
 import { RemoveFcm } from '../android/actions/RemoveFcm';
 import { SelectAndRemoveGoogleServiceAccountKey } from '../android/actions/RemoveGoogleServiceAccountKey';
 import { RemoveKeystore } from '../android/actions/RemoveKeystore';
+import { SetUpBuildCredentials } from '../android/actions/SetUpBuildCredentials';
 import { SetUpBuildCredentialsFromCredentialsJson } from '../android/actions/SetUpBuildCredentialsFromCredentialsJson';
-import { SetUpGoogleServiceAccountKey } from '../android/actions/SetUpGoogleServiceAccountKey';
+import { SetUpGoogleServiceAccountKeyForFcmV1 } from '../android/actions/SetUpGoogleServiceAccountKeyForFcmV1';
+import { SetUpGoogleServiceAccountKeyForSubmissions } from '../android/actions/SetUpGoogleServiceAccountKeyForSubmissions';
 import { UpdateCredentialsJson } from '../android/actions/UpdateCredentialsJson';
 import { UseExistingGoogleServiceAccountKey } from '../android/actions/UseExistingGoogleServiceAccountKey';
 import {
   displayAndroidAppCredentials,
   displayEmptyAndroidCredentials,
 } from '../android/utils/printCredentials';
-import { CredentialsContext } from '../context';
-import { ActionInfo, AndroidActionType, Scope } from './Actions';
-import {
-  buildCredentialsActions,
-  credentialsJsonActions,
-  fcmActions,
-  gsaKeyActions,
-  highLevelActions,
-} from './AndroidActions';
-import { Action, PressAnyKeyToContinue } from './HelperActions';
-import {
-  SelectAndroidBuildCredentials,
-  SelectAndroidBuildCredentialsResultType,
-  SelectExistingAndroidBuildCredentials,
-} from './SelectAndroidBuildCredentials';
-import { SelectBuildProfileFromEasJson } from './SelectBuildProfileFromEasJson';
+import { CredentialsContext, CredentialsContextProjectInfo } from '../context';
+import { AndroidPackageNotDefinedError } from '../errors';
 
 export class ManageAndroid {
-  constructor(private callingAction: Action, private projectDir: string) {}
+  constructor(
+    protected callingAction: Action,
+    protected projectDir: string
+  ) {}
 
   async runAsync(currentActions: ActionInfo[] = highLevelActions): Promise<void> {
-    const hasProjectContext = !!CredentialsContext.getExpoConfigInProject(this.projectDir);
+    const hasProjectContext = !!this.callingAction.projectInfo;
     const buildProfile = hasProjectContext
       ? await new SelectBuildProfileFromEasJson(this.projectDir, Platform.ANDROID).runAsync()
       : null;
+    let projectInfo: CredentialsContextProjectInfo | null = null;
+    if (hasProjectContext) {
+      const { exp, projectId } = await this.callingAction.getDynamicPrivateProjectConfigAsync({
+        env: buildProfile?.env,
+      });
+      projectInfo = { exp, projectId };
+    }
     const ctx = new CredentialsContext({
       projectDir: process.cwd(),
-      user: await ensureLoggedInAsync(),
+      projectInfo,
+      user: this.callingAction.actor,
+      graphqlClient: this.callingAction.graphqlClient,
+      analytics: this.callingAction.analytics,
       env: buildProfile?.env,
+      nonInteractive: false,
+      vcsClient: this.callingAction.vcsClient,
     });
-    const accountName = ctx.hasProjectContext
-      ? getProjectAccountName(ctx.exp, ctx.user)
-      : ensureActorHasUsername(ctx.user);
-    const account = findAccountByName(ctx.user.accounts, accountName);
-    if (!account) {
-      throw new Error(`You do not have access to account: ${accountName}`);
-    }
 
     let gradleContext;
     if (ctx.hasProjectContext) {
@@ -80,14 +85,9 @@ export class ManageAndroid {
     while (true) {
       try {
         if (ctx.hasProjectContext) {
-          const maybeProjectId = await promptToCreateProjectIfNotExistsAsync(ctx.exp);
-          if (!maybeProjectId) {
-            throw new Error(
-              'Your project must be registered with EAS in order to use the credentials manager.'
-            );
-          }
           const appLookupParams = await getAppLookupParamsFromContextAsync(ctx, gradleContext);
           const appCredentials = await ctx.android.getAndroidAppCredentialsWithCommonFieldsAsync(
+            ctx.graphqlClient,
             appLookupParams
           );
           if (!appCredentials) {
@@ -125,8 +125,16 @@ export class ManageAndroid {
           } else if (chosenAction === AndroidActionType.ManageFcm) {
             currentActions = fcmActions;
             continue;
-          } else if (chosenAction === AndroidActionType.ManageGoogleServiceAccountKey) {
-            currentActions = gsaKeyActions;
+          } else if (chosenAction === AndroidActionType.ManageGoogleServiceAccount) {
+            currentActions = gsaActions;
+            continue;
+          } else if (
+            chosenAction === AndroidActionType.ManageGoogleServiceAccountKeyForSubmissions
+          ) {
+            currentActions = gsaKeyActionsForSubmissions;
+            continue;
+          } else if (chosenAction === AndroidActionType.ManageGoogleServiceAccountKeyForFcmV1) {
+            currentActions = gsaKeyActionsForFcmV1;
             continue;
           } else if (chosenAction === AndroidActionType.ManageCredentialsJson) {
             currentActions = credentialsJsonActions;
@@ -135,12 +143,21 @@ export class ManageAndroid {
             currentActions = highLevelActions;
             continue;
           } else if (chosenAction === AndroidActionType.GoBackToCaller) {
-            return await this.callingAction.runAsync(ctx);
+            await this.callingAction.runAsync(ctx);
+            return;
+          } else if (chosenAction === AndroidActionType.Exit) {
+            return;
           }
         }
 
         await this.runProjectSpecificActionAsync(ctx, chosenAction, gradleContext);
       } catch (err) {
+        if (err instanceof AndroidPackageNotDefinedError) {
+          err.message += `\n${learnMore(
+            'https://docs.expo.dev/workflow/configuration/'
+          )} about configuration with app.json/app.config.js`;
+          throw err; // breaks out of the loop to avoid failing again after continuation
+        }
         Log.error(err);
         if (process.env.DEBUG) {
           throw err; // breaks out of the loop so we can get stack trace
@@ -151,21 +168,15 @@ export class ManageAndroid {
     }
   }
 
-  private async createProjectContextAsync(
+  protected async createProjectContextAsync(
     ctx: CredentialsContext,
     buildProfile: BuildProfile<Platform.ANDROID>
   ): Promise<GradleBuildContext | undefined> {
     assert(ctx.hasProjectContext, 'createProjectContextAsync: must have project context.');
-    const maybeProjectId = await promptToCreateProjectIfNotExistsAsync(ctx.exp);
-    if (!maybeProjectId) {
-      throw new Error(
-        'Your project must be registered with EAS in order to use the credentials manager.'
-      );
-    }
-    return await resolveGradleBuildContextAsync(ctx.projectDir, buildProfile);
+    return await resolveGradleBuildContextAsync(ctx.projectDir, buildProfile, ctx.vcsClient);
   }
 
-  private async runProjectSpecificActionAsync(
+  protected async runProjectSpecificActionAsync(
     ctx: CredentialsContext,
     action: AndroidActionType,
     gradleContext?: GradleBuildContext
@@ -176,26 +187,9 @@ export class ManageAndroid {
     );
     const appLookupParams = await getAppLookupParamsFromContextAsync(ctx, gradleContext);
     if (action === AndroidActionType.CreateKeystore) {
-      const selectBuildCredentialsResult = await new SelectAndroidBuildCredentials(
-        appLookupParams
-      ).runAsync(ctx);
-      const keystore = await new CreateKeystore(appLookupParams.account).runAsync(ctx);
-      if (
-        selectBuildCredentialsResult.resultType ===
-        SelectAndroidBuildCredentialsResultType.CREATE_REQUEST
-      ) {
-        await ctx.android.createAndroidAppBuildCredentialsAsync(appLookupParams, {
-          ...selectBuildCredentialsResult.result,
-          androidKeystoreId: keystore.id,
-        });
-      } else {
-        await ctx.android.updateAndroidAppBuildCredentialsAsync(
-          selectBuildCredentialsResult.result,
-          {
-            androidKeystoreId: keystore.id,
-          }
-        );
-      }
+      await new CreateAndroidBuildCredentials(appLookupParams).runAsync(ctx);
+    } else if (action === AndroidActionType.SetDefaultKeystore) {
+      await new SetDefaultAndroidKeystore(appLookupParams).runAsync(ctx);
     } else if (action === AndroidActionType.DownloadKeystore) {
       const buildCredentials = await new SelectExistingAndroidBuildCredentials(
         appLookupParams
@@ -215,20 +209,31 @@ export class ManageAndroid {
       await new AssignFcm(appLookupParams).runAsync(ctx, fcm);
     } else if (action === AndroidActionType.RemoveFcm) {
       await new RemoveFcm(appLookupParams).runAsync(ctx);
-    } else if (action === AndroidActionType.CreateGsaKey) {
-      const gsaKey = await new CreateGoogleServiceAccountKey(appLookupParams.account).runAsync(ctx);
-      await new AssignGoogleServiceAccountKey(appLookupParams).runAsync(ctx, gsaKey);
-    } else if (action === AndroidActionType.UseExistingGsaKey) {
+    } else if (action === AndroidActionType.SetUpGsaKeyForSubmissions) {
+      await new SetUpGoogleServiceAccountKeyForSubmissions(appLookupParams).runAsync(ctx);
+    } else if (action === AndroidActionType.UseExistingGsaKeyForSubmissions) {
       const gsaKey = await new UseExistingGoogleServiceAccountKey(appLookupParams.account).runAsync(
         ctx
       );
       if (gsaKey) {
-        await new AssignGoogleServiceAccountKey(appLookupParams).runAsync(ctx, gsaKey);
+        await new AssignGoogleServiceAccountKeyForSubmissions(appLookupParams).runAsync(
+          ctx,
+          gsaKey
+        );
       }
+    } else if (action === AndroidActionType.SetUpGsaKeyForFcmV1) {
+      await new SetUpGoogleServiceAccountKeyForFcmV1(appLookupParams).runAsync(ctx);
+    } else if (action === AndroidActionType.UseExistingGsaKeyForFcmV1) {
+      const gsaKey = await new UseExistingGoogleServiceAccountKey(appLookupParams.account).runAsync(
+        ctx
+      );
+      if (gsaKey) {
+        await new AssignGoogleServiceAccountKeyForFcmV1(appLookupParams).runAsync(ctx, gsaKey);
+      }
+    } else if (action === AndroidActionType.CreateGsaKey) {
+      await new CreateGoogleServiceAccountKey(appLookupParams.account).runAsync(ctx);
     } else if (action === AndroidActionType.RemoveGsaKey) {
       await new SelectAndRemoveGoogleServiceAccountKey(appLookupParams.account).runAsync(ctx);
-    } else if (action === AndroidActionType.SetUpGsaKey) {
-      await new SetUpGoogleServiceAccountKey(appLookupParams).runAsync(ctx);
     } else if (action === AndroidActionType.UpdateCredentialsJson) {
       const buildCredentials = await new SelectExistingAndroidBuildCredentials(
         appLookupParams
@@ -238,6 +243,8 @@ export class ManageAndroid {
       }
     } else if (action === AndroidActionType.SetUpBuildCredentialsFromCredentialsJson) {
       await new SetUpBuildCredentialsFromCredentialsJson(appLookupParams).runAsync(ctx);
+    } else if (action === AndroidActionType.SetUpBuildCredentials) {
+      await new SetUpBuildCredentials({ app: appLookupParams }).runAsync(ctx);
     }
   }
 }

@@ -1,8 +1,8 @@
-import { asMock } from '../../../../__tests__/utils';
 import { IosAppBuildCredentialsFragment, IosDistributionType } from '../../../../graphql/generated';
 import { promptAsync } from '../../../../prompts';
 import { getAppstoreMock, testAuthCtx } from '../../../__tests__/fixtures-appstore';
 import { createCtxMock } from '../../../__tests__/fixtures-context';
+import { testTarget } from '../../../__tests__/fixtures-ios';
 import { getAllBuildCredentialsAsync } from '../BuildCredentialsUtils';
 import { SetUpAdhocProvisioningProfile } from '../SetUpAdhocProvisioningProfile';
 import { SetUpInternalProvisioningProfile } from '../SetUpInternalProvisioningProfile';
@@ -14,10 +14,10 @@ jest.mock('../SetUpProvisioningProfile');
 jest.mock('../BuildCredentialsUtils', () => ({ getAllBuildCredentialsAsync: jest.fn() }));
 
 beforeEach(() => {
-  asMock(promptAsync).mockReset();
+  jest.mocked(promptAsync).mockReset();
 
-  asMock(getAllBuildCredentialsAsync).mockReset();
-  asMock(getAllBuildCredentialsAsync).mockImplementation(() => {
+  jest.mocked(getAllBuildCredentialsAsync).mockReset();
+  jest.mocked(getAllBuildCredentialsAsync).mockImplementation(() => {
     throw new Error(
       `unhandled getAllBuildCredentialsAsync call - this shouldn't happen - fix tests!`
     );
@@ -37,14 +37,17 @@ describe(SetUpInternalProvisioningProfile, () => {
   describe('interactive mode', () => {
     describe('when authenticated with apple', () => {
       it('runs the SetUpAdhocProvisioningProfile action for non-enterprise team', async () => {
-        asMock(getAllBuildCredentialsAsync).mockImplementationOnce(() => {
+        jest.mocked(getAllBuildCredentialsAsync).mockImplementationOnce(async () => {
           const buildCredentials: IosAppBuildCredentialsFragment[] = [];
           return buildCredentials;
         });
         const action = new SetUpInternalProvisioningProfile({
-          account: { id: 'account-id', name: 'account-name' },
-          bundleIdentifier: 'com.expo.test',
-          projectName: 'testproject',
+          app: {
+            account: { id: 'account-id', name: 'account-name', users: [] },
+            bundleIdentifier: 'com.expo.test',
+            projectName: 'testproject',
+          },
+          target: testTarget,
         });
         const ctx = createCtxMock({
           nonInteractive: false,
@@ -64,18 +67,21 @@ describe(SetUpInternalProvisioningProfile, () => {
       });
 
       it('asks the user for an action to run when they have access to an enterprise team', async () => {
-        asMock(promptAsync).mockImplementationOnce(() => ({
+        jest.mocked(promptAsync).mockImplementationOnce(async () => ({
           distributionType: IosDistributionType.Enterprise,
         }));
-        asMock(getAllBuildCredentialsAsync).mockImplementationOnce(() => {
+        jest.mocked(getAllBuildCredentialsAsync).mockImplementationOnce(async () => {
           const buildCredentials: IosAppBuildCredentialsFragment[] = [];
           return buildCredentials;
         });
 
         const action = new SetUpInternalProvisioningProfile({
-          account: { id: 'account-id', name: 'account-name' },
-          bundleIdentifier: 'com.expo.test',
-          projectName: 'testproject',
+          app: {
+            account: { id: 'account-id', name: 'account-name', users: [] },
+            bundleIdentifier: 'com.expo.test',
+            projectName: 'testproject',
+          },
+          target: testTarget,
         });
         const ctx = createCtxMock({
           nonInteractive: false,
@@ -99,10 +105,10 @@ describe(SetUpInternalProvisioningProfile, () => {
     });
     describe('when not authenticated with apple', () => {
       it('asks the user for an action to run when both adhoc and universal distribution credentials exist', async () => {
-        asMock(promptAsync).mockImplementationOnce(() => ({
+        jest.mocked(promptAsync).mockImplementationOnce(async () => ({
           distributionType: IosDistributionType.Enterprise,
         }));
-        asMock(getAllBuildCredentialsAsync).mockImplementationOnce(() => {
+        jest.mocked(getAllBuildCredentialsAsync).mockImplementationOnce(async () => {
           const buildCredentials: IosAppBuildCredentialsFragment[] = [
             testAdhocBuildCredentials,
             testEnterpriseBuildCredentials,
@@ -111,9 +117,12 @@ describe(SetUpInternalProvisioningProfile, () => {
         });
 
         const action = new SetUpInternalProvisioningProfile({
-          account: { id: 'account-id', name: 'account-name' },
-          bundleIdentifier: 'com.expo.test',
-          projectName: 'testproject',
+          app: {
+            account: { id: 'account-id', name: 'account-name', users: [] },
+            bundleIdentifier: 'com.expo.test',
+            projectName: 'testproject',
+          },
+          target: testTarget,
         });
         const ctx = createCtxMock({
           nonInteractive: false,
@@ -133,18 +142,21 @@ describe(SetUpInternalProvisioningProfile, () => {
       });
 
       it('runs the SetUpAdhocProvisioningProfile action when adhoc credentials exist', async () => {
-        asMock(promptAsync).mockImplementationOnce(() => ({
+        jest.mocked(promptAsync).mockImplementationOnce(async () => ({
           distributionType: IosDistributionType.Enterprise,
         }));
-        asMock(getAllBuildCredentialsAsync).mockImplementationOnce(() => {
+        jest.mocked(getAllBuildCredentialsAsync).mockImplementationOnce(async () => {
           const buildCredentials: IosAppBuildCredentialsFragment[] = [testAdhocBuildCredentials];
           return buildCredentials;
         });
 
         const action = new SetUpInternalProvisioningProfile({
-          account: { id: 'account-id', name: 'account-name' },
-          bundleIdentifier: 'com.expo.test',
-          projectName: 'testproject',
+          app: {
+            account: { id: 'account-id', name: 'account-name', users: [] },
+            bundleIdentifier: 'com.expo.test',
+            projectName: 'testproject',
+          },
+          target: testTarget,
         });
         const ctx = createCtxMock({
           nonInteractive: false,
@@ -164,10 +176,10 @@ describe(SetUpInternalProvisioningProfile, () => {
       });
 
       it('runs the SetUpProvisioningProfile action when enterprise credentials exist', async () => {
-        asMock(promptAsync).mockImplementationOnce(() => ({
+        jest.mocked(promptAsync).mockImplementationOnce(async () => ({
           distributionType: IosDistributionType.Enterprise,
         }));
-        asMock(getAllBuildCredentialsAsync).mockImplementationOnce(() => {
+        jest.mocked(getAllBuildCredentialsAsync).mockImplementationOnce(async () => {
           const buildCredentials: IosAppBuildCredentialsFragment[] = [
             testEnterpriseBuildCredentials,
           ];
@@ -175,9 +187,12 @@ describe(SetUpInternalProvisioningProfile, () => {
         });
 
         const action = new SetUpInternalProvisioningProfile({
-          account: { id: 'account-id', name: 'account-name' },
-          bundleIdentifier: 'com.expo.test',
-          projectName: 'testproject',
+          app: {
+            account: { id: 'account-id', name: 'account-name', users: [] },
+            bundleIdentifier: 'com.expo.test',
+            projectName: 'testproject',
+          },
+          target: testTarget,
         });
         const ctx = createCtxMock({
           nonInteractive: false,
@@ -197,18 +212,21 @@ describe(SetUpInternalProvisioningProfile, () => {
       });
 
       it('forces the apple authentication when neither adhoc nor enterprise credentials exist', async () => {
-        asMock(promptAsync).mockImplementationOnce(() => ({
+        jest.mocked(promptAsync).mockImplementationOnce(async () => ({
           distributionType: IosDistributionType.Enterprise,
         }));
-        asMock(getAllBuildCredentialsAsync).mockImplementationOnce(() => {
+        jest.mocked(getAllBuildCredentialsAsync).mockImplementationOnce(async () => {
           const buildCredentials: IosAppBuildCredentialsFragment[] = [];
           return buildCredentials;
         });
 
         const action = new SetUpInternalProvisioningProfile({
-          account: { id: 'account-id', name: 'account-name' },
-          bundleIdentifier: 'com.expo.test',
-          projectName: 'testproject',
+          app: {
+            account: { id: 'account-id', name: 'account-name', users: [] },
+            bundleIdentifier: 'com.expo.test',
+            projectName: 'testproject',
+          },
+          target: testTarget,
         });
         const ctx = createCtxMock({
           nonInteractive: false,
@@ -228,7 +246,7 @@ describe(SetUpInternalProvisioningProfile, () => {
 
   describe('non-interactive mode', () => {
     it('throws an error when both adhoc and enterprise credentials are set up', async () => {
-      asMock(getAllBuildCredentialsAsync).mockImplementationOnce(() => {
+      jest.mocked(getAllBuildCredentialsAsync).mockImplementationOnce(async () => {
         const buildCredentials: IosAppBuildCredentialsFragment[] = [
           testAdhocBuildCredentials,
           testEnterpriseBuildCredentials,
@@ -236,9 +254,12 @@ describe(SetUpInternalProvisioningProfile, () => {
         return buildCredentials;
       });
       const action = new SetUpInternalProvisioningProfile({
-        account: { id: 'account-id', name: 'account-name' },
-        bundleIdentifier: 'com.expo.test',
-        projectName: 'testproject',
+        app: {
+          account: { id: 'account-id', name: 'account-name', users: [] },
+          bundleIdentifier: 'com.expo.test',
+          projectName: 'testproject',
+        },
+        target: testTarget,
       });
       const ctx = createCtxMock({
         nonInteractive: true,
@@ -249,14 +270,17 @@ describe(SetUpInternalProvisioningProfile, () => {
     });
 
     it('throws an error when neither adhoc nor enterprise credentials are set up', async () => {
-      asMock(getAllBuildCredentialsAsync).mockImplementationOnce(() => {
+      jest.mocked(getAllBuildCredentialsAsync).mockImplementationOnce(async () => {
         const buildCredentials: IosAppBuildCredentialsFragment[] = [];
         return buildCredentials;
       });
       const action = new SetUpInternalProvisioningProfile({
-        account: { id: 'account-id', name: 'account-name' },
-        bundleIdentifier: 'com.expo.test',
-        projectName: 'testproject',
+        app: {
+          account: { id: 'account-id', name: 'account-name', users: [] },
+          bundleIdentifier: 'com.expo.test',
+          projectName: 'testproject',
+        },
+        target: testTarget,
       });
       const ctx = createCtxMock({
         nonInteractive: true,
@@ -265,14 +289,17 @@ describe(SetUpInternalProvisioningProfile, () => {
     });
 
     it('runs the SetUpAdhocProvisioningProfile action when adhoc credentials exist', async () => {
-      asMock(getAllBuildCredentialsAsync).mockImplementationOnce(() => {
+      jest.mocked(getAllBuildCredentialsAsync).mockImplementationOnce(async () => {
         const buildCredentials: IosAppBuildCredentialsFragment[] = [testAdhocBuildCredentials];
         return buildCredentials;
       });
       const action = new SetUpInternalProvisioningProfile({
-        account: { id: 'account-id', name: 'account-name' },
-        bundleIdentifier: 'com.expo.test',
-        projectName: 'testproject',
+        app: {
+          account: { id: 'account-id', name: 'account-name', users: [] },
+          bundleIdentifier: 'com.expo.test',
+          projectName: 'testproject',
+        },
+        target: testTarget,
       });
       const ctx = createCtxMock({
         nonInteractive: true,
@@ -287,14 +314,17 @@ describe(SetUpInternalProvisioningProfile, () => {
     });
 
     it('runs the SetUpProvisioningProfile action when enterprise credentials exist', async () => {
-      asMock(getAllBuildCredentialsAsync).mockImplementationOnce(() => {
+      jest.mocked(getAllBuildCredentialsAsync).mockImplementationOnce(async () => {
         const buildCredentials: IosAppBuildCredentialsFragment[] = [testEnterpriseBuildCredentials];
         return buildCredentials;
       });
       const action = new SetUpInternalProvisioningProfile({
-        account: { id: 'account-id', name: 'account-name' },
-        bundleIdentifier: 'com.expo.test',
-        projectName: 'testproject',
+        app: {
+          account: { id: 'account-id', name: 'account-name', users: [] },
+          bundleIdentifier: 'com.expo.test',
+          projectName: 'testproject',
+        },
+        target: testTarget,
       });
       const ctx = createCtxMock({
         nonInteractive: true,

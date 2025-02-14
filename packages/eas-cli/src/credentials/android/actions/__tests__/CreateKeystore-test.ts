@@ -1,5 +1,8 @@
-import { asMock } from '../../../../__tests__/utils';
-import { jester as mockJester } from '../../../../credentials/__tests__/fixtures-constants';
+import {
+  jester as mockJester,
+  testAppQueryByIdResponse,
+} from '../../../../credentials/__tests__/fixtures-constants';
+import { AppQuery } from '../../../../graphql/queries/AppQuery';
 import { testKeystore } from '../../../__tests__/fixtures-android';
 import { createCtxMock } from '../../../__tests__/fixtures-context';
 import { askForUserProvidedAsync } from '../../../utils/promptForCredentials';
@@ -7,15 +10,16 @@ import { generateRandomKeystoreAsync } from '../../utils/keystore';
 import { getAppLookupParamsFromContextAsync } from '../BuildCredentialsUtils';
 import { CreateKeystore } from '../CreateKeystore';
 
-jest.mock('../../../../project/ensureProjectExists');
 jest.mock('../../../../prompts', () => ({ confirmAsync: jest.fn(() => true) }));
 jest.mock('../../../../user/actions', () => ({ ensureLoggedInAsync: jest.fn(() => mockJester) }));
 jest.mock('../../../utils/promptForCredentials');
 jest.mock('../../utils/keystore', () => ({ generateRandomKeystoreAsync: jest.fn() }));
+jest.mock('../../../../graphql/queries/AppQuery');
 
 describe('CreateKeystore', () => {
   beforeEach(() => {
-    asMock(generateRandomKeystoreAsync).mockReset();
+    jest.mocked(generateRandomKeystoreAsync).mockReset();
+    jest.mocked(AppQuery.byIdAsync).mockResolvedValue(testAppQueryByIdResponse);
   });
   it('creates a keystore in Interactive Mode', async () => {
     const ctx = createCtxMock({ nonInteractive: false });
@@ -28,7 +32,7 @@ describe('CreateKeystore', () => {
     expect(generateRandomKeystoreAsync).toHaveBeenCalled();
   });
   it('creates a keystore by uploading', async () => {
-    asMock(askForUserProvidedAsync).mockImplementationOnce(() => testKeystore);
+    jest.mocked(askForUserProvidedAsync).mockImplementationOnce(async () => testKeystore);
     const ctx = createCtxMock({ nonInteractive: false });
     const appLookupParams = await getAppLookupParamsFromContextAsync(ctx);
     const createKeystoreAction = new CreateKeystore(appLookupParams.account);
@@ -36,6 +40,7 @@ describe('CreateKeystore', () => {
 
     // expect keystore to be created on expo servers
     expect(ctx.android.createKeystoreAsync).toHaveBeenCalledWith(
+      ctx.graphqlClient,
       appLookupParams.account,
       expect.objectContaining(testKeystore)
     );

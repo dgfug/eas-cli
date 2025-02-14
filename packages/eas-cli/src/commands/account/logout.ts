@@ -1,16 +1,17 @@
 import EasCommand from '../../commandUtils/EasCommand';
 import Log from '../../log';
-import { logoutAsync } from '../../user/User';
 
 export default class AccountLogout extends EasCommand {
-  static description = 'log out';
-  static aliases = ['logout'];
+  static override description = 'log out';
+  static override aliases = ['logout'];
 
-  protected mustBeRunInsideProject = false;
-  protected requiresAuthentication = false;
+  static override contextDefinition = {
+    ...this.ContextOptions.SessionManagment,
+  };
 
   async runAsync(): Promise<void> {
-    await logoutAsync();
+    const { sessionManager } = await this.getContextAsync(AccountLogout, { nonInteractive: false });
+    await sessionManager.logoutAsync();
     Log.log('Logged out');
   }
 }

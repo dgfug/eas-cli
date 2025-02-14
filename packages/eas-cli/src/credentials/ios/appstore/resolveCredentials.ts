@@ -3,9 +3,11 @@ import chalk from 'chalk';
 import * as fs from 'fs-extra';
 import wrapAnsi from 'wrap-ansi';
 
+import { AppleTeamType, Team } from './authenticateTypes';
+import * as Keychain from './keychain';
 import Log, { learnMore } from '../../../log';
 import { promptAsync } from '../../../prompts';
-import * as Keychain from './keychain';
+import { MinimalAscApiKey } from '../credentials';
 
 /**
  * Get the username and possibly the password from the environment variables or the supplied options.
@@ -13,7 +15,7 @@ import * as Keychain from './keychain';
  *
  * @param options
  */
-export async function resolveCredentialsAsync(
+export async function resolveUserCredentialsAsync(
   options: Partial<Auth.UserCredentials>
 ): Promise<Partial<Auth.UserCredentials>> {
   const credentials = getAppleIdFromEnvironmentOrOptions(options);
@@ -23,6 +25,162 @@ export async function resolveCredentialsAsync(
   }
 
   return credentials;
+}
+
+export function hasAscEnvVars(): boolean {
+  return (
+    !!process.env.EXPO_ASC_API_KEY_PATH ||
+    !!process.env.EXPO_ASC_KEY_ID ||
+    !!process.env.EXPO_ASC_ISSUER_ID
+  );
+}
+
+export async function resolveAscApiKeyAsync(
+  ascApiKey?: MinimalAscApiKey
+): Promise<MinimalAscApiKey> {
+  const passedKeyP8 = await getAscKeyP8FromEnvironmentOrOptionsAsync(ascApiKey);
+  const passedKeyId = await getAscKeyIdFromEnvironmentOrOptionsAsync(ascApiKey);
+  const passedIssuerId = await getAscIssuerIdFromEnvironmentOrOptionsAsync(ascApiKey);
+
+  return {
+    keyP8: passedKeyP8,
+    keyId: passedKeyId,
+    issuerId: passedIssuerId,
+  };
+}
+
+async function getAscKeyP8FromEnvironmentOrOptionsAsync(
+  ascApiKey?: MinimalAscApiKey
+): Promise<string> {
+  if (ascApiKey?.keyP8) {
+    return ascApiKey?.keyP8;
+  } else if (process.env.EXPO_ASC_API_KEY_PATH) {
+    return await fs.readFile(process.env.EXPO_ASC_API_KEY_PATH, 'utf-8');
+  }
+
+  const { ascApiKeyPath } = await promptAsync({
+    type: 'text',
+    name: 'ascApiKeyPath',
+    message: `Path to ASC Api Key Path (.p8):`,
+    validate: (val: string) => val !== '',
+  });
+  return await fs.readFile(ascApiKeyPath, 'utf-8');
+}
+
+async function getAscKeyIdFromEnvironmentOrOptionsAsync(
+  ascApiKey?: MinimalAscApiKey
+): Promise<string> {
+  if (ascApiKey?.keyId) {
+    return ascApiKey?.keyId;
+  } else if (process.env.EXPO_ASC_KEY_ID) {
+    return process.env.EXPO_ASC_KEY_ID;
+  }
+
+  const { ascApiKeyId } = await promptAsync({
+    type: 'text',
+    name: 'ascApiKeyId',
+    message: `ASC Api Key ID:`,
+    validate: (val: string) => val !== '',
+  });
+  return ascApiKeyId;
+}
+
+async function getAscIssuerIdFromEnvironmentOrOptionsAsync(
+  ascApiKey?: MinimalAscApiKey
+): Promise<string> {
+  if (ascApiKey?.issuerId) {
+    return ascApiKey?.issuerId;
+  } else if (process.env.EXPO_ASC_ISSUER_ID) {
+    return process.env.EXPO_ASC_ISSUER_ID;
+  }
+
+  const { ascIssuerId } = await promptAsync({
+    type: 'text',
+    name: 'ascIssuerId',
+    message: `ASC Issuer ID:`,
+    validate: (val: string) => val !== '',
+  });
+  return ascIssuerId;
+}
+
+function isAppleTeamType(maybeTeamType: any): maybeTeamType is AppleTeamType {
+  return maybeTeamType in AppleTeamType;
+}
+
+function assertAppleTeamType(maybeTeamType: any): AppleTeamType {
+  if (!isAppleTeamType(maybeTeamType)) {
+    throw new Error(
+      `Invalid Apple Team Type: ${maybeTeamType}. Must be one of ${Object.keys(AppleTeamType).join(
+        ', '
+      )}`
+    );
+  }
+  return maybeTeamType;
+}
+
+function resolveAppleTeamTypeFromEnvironment(): AppleTeamType | undefined {
+  if (!process.env.EXPO_APPLE_TEAM_TYPE) {
+    return undefined;
+  }
+  return assertAppleTeamType(process.env.EXPO_APPLE_TEAM_TYPE);
+}
+
+async function getAppleTeamIdFromEnvironmentOrOptionsAsync(options: {
+  teamId?: string;
+}): Promise<string> {
+  if (options.teamId) {
+    return options.teamId;
+  } else if (process.env.EXPO_APPLE_TEAM_ID) {
+    return process.env.EXPO_APPLE_TEAM_ID;
+  }
+
+  const { appleTeamId } = await promptAsync({
+    type: 'text',
+    name: 'appleTeamId',
+    message: `Apple Team ID:`,
+    validate: (val: string) => val !== '',
+  });
+  return appleTeamId;
+}
+
+async function getAppleTeamTypeFromEnvironmentOrOptionsAsync(options: {
+  teamType?: AppleTeamType;
+}): Promise<string> {
+  if (options.teamType) {
+    return options.teamType;
+  }
+
+  const appleTeamTypeFromEnvironment = resolveAppleTeamTypeFromEnvironment();
+  if (appleTeamTypeFromEnvironment) {
+    return appleTeamTypeFromEnvironment;
+  }
+
+  const { appleTeamType } = await promptAsync({
+    type: 'select',
+    message: 'Select your Apple Team Type:',
+    name: 'appleTeamType',
+    choices: [
+      { title: 'Enterprise', value: AppleTeamType.IN_HOUSE },
+      { title: 'Company/Organization', value: AppleTeamType.COMPANY_OR_ORGANIZATION },
+      { title: 'Individual', value: AppleTeamType.INDIVIDUAL },
+    ],
+  });
+  return appleTeamType;
+}
+
+export async function resolveAppleTeamAsync(
+  options: {
+    teamId?: string;
+    teamName?: string;
+    teamType?: AppleTeamType;
+  } = {}
+): Promise<Team> {
+  const passedTeamType = await getAppleTeamTypeFromEnvironmentOrOptionsAsync(options);
+  return {
+    id: await getAppleTeamIdFromEnvironmentOrOptionsAsync(options),
+    name: options.teamName,
+    inHouse: passedTeamType === AppleTeamType.IN_HOUSE,
+  };
 }
 
 function getAppleIdFromEnvironmentOrOptions({
@@ -50,13 +208,18 @@ async function promptUsernameAsync(): Promise<string> {
   // the default value for quicker authentication.
   const lastAppleId = await getCachedUsernameAsync();
 
-  const { username } = await promptAsync({
+  let { username } = await promptAsync({
     type: 'text',
     name: 'username',
     message: `Apple ID:`,
     validate: (val: string) => val !== '',
     initial: lastAppleId ?? undefined,
   });
+  // https://github.com/expo/eas-cli/issues/2254
+  // user got an invalid unprintable character in their username, which was saved to cache and used to prefill the prompt
+  // which made them accept the prefilled value not knowing it contains the character and fail to log in
+  // this replace makes sure no such characters are used or cached
+  username = username.replace(/[\x00-\x1F]/gi, '');
 
   if (username && username !== lastAppleId) {
     await cacheUsernameAsync(username);
@@ -150,7 +313,7 @@ async function getCachedPasswordAsync({
   }
 
   const serviceName = getKeychainServiceName(username);
-  return Keychain.getPasswordAsync({ username, serviceName });
+  return await Keychain.getPasswordAsync({ username, serviceName });
 }
 
 async function cachePasswordAsync({ username, password }: Auth.UserCredentials): Promise<boolean> {
@@ -162,5 +325,5 @@ async function cachePasswordAsync({ username, password }: Auth.UserCredentials):
   Log.log(`\u203A Saving Apple ID password to the local Keychain`);
   Log.log(`  ${learnMore('https://docs.expo.dev/distribution/security#keychain')}`);
   const serviceName = getKeychainServiceName(username);
-  return Keychain.setPasswordAsync({ username, password, serviceName });
+  return await Keychain.setPasswordAsync({ username, password, serviceName });
 }

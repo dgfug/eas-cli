@@ -1,92 +1,68 @@
 import { Platform } from '@expo/eas-build-job';
-import { BuildProfile, EasJsonReader, errors } from '@expo/eas-json';
+import { BuildProfile, EasJsonAccessor, EasJsonUtils, errors } from '@expo/eas-json';
+import fs from 'fs-extra';
+import { vol } from 'memfs';
+import os from 'os';
 
-import { asMock } from '../../__tests__/utils';
+import Log from '../../log';
 import { selectAsync } from '../../prompts';
-import { getProfilesAsync } from '../profiles';
+import {
+  clearHasPrintedDeprecationWarnings,
+  getProfilesAsync,
+  maybePrintBuildProfileDeprecationWarningsAsync,
+} from '../profiles';
 
+jest.mock('fs');
 jest.mock('../../prompts');
 jest.mock('@expo/eas-json', () => {
   const actual = jest.requireActual('@expo/eas-json');
 
-  const EasJsonReaderMock = jest.fn();
-  EasJsonReaderMock.prototype = {
+  const EasJsonUtilsMock = {
     getBuildProfileAsync: jest.fn(),
     getBuildProfileNamesAsync: jest.fn(),
+    getBuildProfileDeprecationWarningsAsync: jest.fn(() => []),
   };
   return {
     ...actual,
-    EasJsonReader: EasJsonReaderMock,
+    EasJsonUtils: EasJsonUtilsMock,
   };
 });
 
-const getBuildProfileAsync = jest.spyOn(EasJsonReader.prototype, 'getBuildProfileAsync');
-const getBuildProfileNamesAsync = jest.spyOn(EasJsonReader.prototype, 'getBuildProfileNamesAsync');
+const getBuildProfileAsync = jest.spyOn(EasJsonUtils, 'getBuildProfileAsync');
+const getBuildProfileNamesAsync = jest.spyOn(EasJsonUtils, 'getBuildProfileNamesAsync');
+const getBuildProfileDeprecationWarningsAsync = jest.spyOn(
+  EasJsonUtils,
+  'getBuildProfileDeprecationWarningsAsync'
+);
+const newLineSpy = jest.spyOn(Log, 'newLine');
+const warnSpy = jest.spyOn(Log, 'warn');
+const projectDir = '/app';
 
 describe(getProfilesAsync, () => {
   afterEach(() => {
     getBuildProfileAsync.mockReset();
     getBuildProfileNamesAsync.mockReset();
-    asMock(selectAsync).mockReset();
+    jest.mocked(selectAsync).mockReset();
   });
 
   it('defaults to production profile', async () => {
+    const easJsonAccessor = EasJsonAccessor.fromProjectPath('/fake');
+    const readRawEasJsonMock = jest.spyOn(easJsonAccessor, 'readRawJsonAsync');
+    readRawEasJsonMock.mockImplementation(async () => {
+      return {};
+    });
     const result = await getProfilesAsync({
-      projectDir: '/fake',
+      easJsonAccessor,
       platforms: [Platform.ANDROID, Platform.IOS],
       profileName: undefined,
       type: 'build',
+      projectDir,
     });
 
     expect(result[0].profileName).toBe('production');
     expect(result[1].profileName).toBe('production');
-    expect(getBuildProfileAsync).toBeCalledWith(Platform.ANDROID, 'production');
-    expect(getBuildProfileAsync).toBeCalledWith(Platform.IOS, 'production');
-  });
-
-  it('defaults to release profile when production profile is non-existent', async () => {
-    getBuildProfileAsync
-      .mockImplementationOnce(() => {
-        throw new errors.MissingProfileError();
-      })
-      .mockImplementationOnce(() => {
-        throw new errors.MissingProfileError();
-      });
-
-    const result = await getProfilesAsync({
-      projectDir: '/fake',
-      platforms: [Platform.ANDROID, Platform.IOS],
-      profileName: undefined,
-      type: 'build',
-    });
-
-    expect(result[0].profileName).toBe('release');
-    expect(result[1].profileName).toBe('release');
-    expect(getBuildProfileAsync).toBeCalledWith(Platform.ANDROID, 'production');
-    expect(getBuildProfileAsync).toBeCalledWith(Platform.IOS, 'production');
-    expect(getBuildProfileAsync).toBeCalledWith(Platform.ANDROID, 'release');
-    expect(getBuildProfileAsync).toBeCalledWith(Platform.IOS, 'release');
-  });
-
-  it('asks the user to pick profile if "release" does not exist', async () => {
-    getBuildProfileAsync.mockImplementation(async (_, profileName) => {
-      if (profileName === 'foo') {
-        return {} as unknown as BuildProfile<Platform>;
-      }
-      throw new errors.MissingProfileError();
-    });
-    getBuildProfileNamesAsync.mockImplementation(() => Promise.resolve(['foo', 'bar']));
-    asMock(selectAsync).mockImplementation(() => 'foo');
-
-    const result = await getProfilesAsync({
-      projectDir: '/fake',
-      platforms: [Platform.ANDROID],
-      profileName: undefined,
-      type: 'build',
-    });
-    expect(selectAsync).toHaveBeenCalled();
-    expect(getBuildProfileAsync).toBeCalledWith(Platform.ANDROID, 'foo');
-    expect(result[0].profileName).toBe('foo');
+    expect(getBuildProfileAsync).toBeCalledWith(easJsonAccessor, Platform.ANDROID, undefined);
+    expect(getBuildProfileAsync).toBeCalledWith(easJsonAccessor, Platform.IOS, undefined);
   });
 
   it('throws an error if there are no profiles in eas.json', async () => {
@@ -97,26 +73,83 @@ describe(getProfilesAsync, () => {
 
     await expect(
       getProfilesAsync({
-        projectDir: '/fake',
+        easJsonAccessor: EasJsonAccessor.fromProjectPath('/fake'),
         platforms: [Platform.ANDROID],
         profileName: undefined,
         type: 'build',
+        projectDir,
       })
     ).rejects.toThrowError(errors.MissingProfileError);
   });
 
   it('gets a specific profile', async () => {
+    const easJsonAccessor = EasJsonAccessor.fromProjectPath('/fake');
+    const readRawEasJsonMock = jest.spyOn(easJsonAccessor, 'readRawJsonAsync');
+    readRawEasJsonMock.mockImplementation(async () => {
+      return {};
+    });
     const result = await getProfilesAsync({
-      projectDir: '/fake',
+      easJsonAccessor,
       platforms: [Platform.ANDROID, Platform.IOS],
       profileName: 'custom-profile',
       type: 'build',
+      projectDir,
     });
 
     expect(result[0].profileName).toBe('custom-profile');
     expect(result[1].profileName).toBe('custom-profile');
-    expect(getBuildProfileAsync).toBeCalledWith(Platform.ANDROID, 'custom-profile');
-    expect(getBuildProfileAsync).toBeCalledWith(Platform.IOS, 'custom-profile');
+    expect(getBuildProfileAsync).toBeCalledWith(
+      easJsonAccessor,
+      Platform.ANDROID,
+      'custom-profile'
+    );
+    expect(getBuildProfileAsync).toBeCalledWith(easJsonAccessor, Platform.IOS, 'custom-profile');
+  });
+
+  describe('node version', () => {
+    const nodeVersion = '14.17.1';
+
+    it('is read from profile', async () => {
+      const easJsonAccessor = EasJsonAccessor.fromProjectPath(projectDir);
+      getBuildProfileAsync.mockImplementation(async () => {
+        return { node: nodeVersion } as BuildProfile<Platform.ANDROID>;
+      });
+      const result = await getProfilesAsync({
+        easJsonAccessor,
+        platforms: [Platform.ANDROID],
+        profileName: 'custom-profile',
+        type: 'build',
+        projectDir,
+      });
+
+      expect(result[0].profile.node).toBe(nodeVersion);
+    });
+
+    describe('with .nvmrc', () => {
+      beforeEach(async () => {
+        vol.reset();
+        await fs.mkdirp(os.tmpdir());
+
+        vol.fromJSON({ '.nvmrc': nodeVersion }, projectDir);
+      });
+
+      it('is read from .nvmrc', async () => {
+        const easJsonAccessor = EasJsonAccessor.fromProjectPath(projectDir);
+        getBuildProfileAsync.mockImplementation(async () => {
+          return {} as BuildProfile<Platform.ANDROID>;
+        });
+
+        const result = await getProfilesAsync({
+          easJsonAccessor,
+          platforms: [Platform.ANDROID],
+          profileName: 'custom-profile',
+          type: 'build',
+          projectDir,
+        });
+
+        expect(result[0].profile.node).toBe(nodeVersion);
+      });
+    });
   });
 
   it('throws validation error if eas.json is invalid', async () => {
@@ -126,11 +159,91 @@ describe(getProfilesAsync, () => {
 
     await expect(
       getProfilesAsync({
-        projectDir: '/fake',
+        easJsonAccessor: EasJsonAccessor.fromProjectPath('/fake'),
         platforms: [Platform.ANDROID, Platform.IOS],
         profileName: undefined,
         type: 'build',
+        projectDir,
       })
     ).rejects.toThrowError(/eas.json is not valid/);
+  });
+});
+describe(maybePrintBuildProfileDeprecationWarningsAsync, () => {
+  afterEach(() => {
+    clearHasPrintedDeprecationWarnings();
+    newLineSpy.mockClear();
+    warnSpy.mockClear();
+  });
+  const easJsonAccessor = EasJsonAccessor.fromProjectPath('/fake');
+  const readRawEasJsonMock = jest.spyOn(easJsonAccessor, 'readRawJsonAsync');
+  readRawEasJsonMock.mockImplementation(async () => {
+    return {};
+  });
+  getBuildProfileAsync.mockImplementation(async () => {
+    return {} as BuildProfile<Platform.ANDROID>;
+  });
+
+  describe('no deprecation warnings', () => {
+    it('does not print any warnings', async () => {
+      getBuildProfileDeprecationWarningsAsync.mockImplementation(async () => []);
+      await maybePrintBuildProfileDeprecationWarningsAsync(
+        easJsonAccessor,
+        Platform.ANDROID,
+        'production'
+      );
+      expect(newLineSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+  });
+  describe('one deprecation warning', () => {
+    it('prints the warning', async () => {
+      getBuildProfileDeprecationWarningsAsync.mockImplementation(async () => [
+        {
+          message: [
+            'The "build.production.cache.customPaths" field in eas.json is deprecated and will be removed in the future. Please use "build.production.cache.paths" instead.',
+          ],
+          docsUrl: 'https://docs.expo.dev/build-reference/eas-json/#cache',
+        },
+      ]);
+      await maybePrintBuildProfileDeprecationWarningsAsync(
+        easJsonAccessor,
+        Platform.ANDROID,
+        'production'
+      );
+      expect(newLineSpy).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenCalledTimes(3);
+      const warnCalls = warnSpy.mock.calls;
+      expect(warnCalls).toMatchSnapshot();
+    });
+  });
+  describe('multiple deprecation warnings', () => {
+    it('prints the warnings', async () => {
+      getBuildProfileDeprecationWarningsAsync.mockImplementation(async () => [
+        {
+          message: [
+            'The "build.production.cache.customPaths" field in eas.json is deprecated and will be removed in the future. Please use "build.production.cache.paths" instead.',
+          ],
+          docsUrl: 'https://docs.expo.dev/build-reference/eas-json/#cache',
+        },
+        {
+          message: [
+            'The "build.production.cache.cacheDefaultPaths" field in eas.json is deprecated and will be removed in the future.',
+          ],
+          docsUrl: 'https://docs.expo.dev/build-reference/caching/#ios-dependencies',
+        },
+        {
+          message: ['Other message'],
+        },
+      ]);
+      await maybePrintBuildProfileDeprecationWarningsAsync(
+        easJsonAccessor,
+        Platform.ANDROID,
+        'production'
+      );
+      expect(newLineSpy).toHaveBeenCalledTimes(4);
+      expect(warnSpy).toHaveBeenCalledTimes(6);
+      const warnCalls = warnSpy.mock.calls;
+      expect(warnCalls).toMatchSnapshot();
+    });
   });
 });
