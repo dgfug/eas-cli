@@ -1,11 +1,12 @@
+import { getAllBuildCredentialsAsync } from './BuildCredentialsUtils';
+import { SetUpAdhocProvisioningProfile } from './SetUpAdhocProvisioningProfile';
+import { SetUpProvisioningProfile } from './SetUpProvisioningProfile';
 import { IosAppBuildCredentialsFragment, IosDistributionType } from '../../../graphql/generated';
 import Log, { learnMore } from '../../../log';
 import { promptAsync } from '../../../prompts';
 import { CredentialsContext } from '../../context';
-import { AppLookupParams } from '../api/GraphqlClient';
-import { getAllBuildCredentialsAsync } from './BuildCredentialsUtils';
-import { SetUpAdhocProvisioningProfile } from './SetUpAdhocProvisioningProfile';
-import { SetUpProvisioningProfile } from './SetUpProvisioningProfile';
+import { AppLookupParams } from '../api/graphql/types/AppLookupParams';
+import { Target } from '../types';
 
 /**
  * It's used when setting up credentials for internal distribution but `enterpriseProvisioning` is not set.
@@ -14,11 +15,17 @@ import { SetUpProvisioningProfile } from './SetUpProvisioningProfile';
  * to choose if they want to set up an adhoc or universal distribution provisioning profile. Otherwise, always
  * set up an adhoc provisioning profile.
  */
+
+interface Options {
+  app: AppLookupParams;
+  target: Target;
+}
+
 export class SetUpInternalProvisioningProfile {
-  constructor(private app: AppLookupParams) {}
+  constructor(private readonly options: Options) {}
 
   async runAsync(ctx: CredentialsContext): Promise<IosAppBuildCredentialsFragment> {
-    const buildCredentials = await getAllBuildCredentialsAsync(ctx, this.app);
+    const buildCredentials = await getAllBuildCredentialsAsync(ctx, this.options.app);
 
     const adhocBuildCredentialsExist =
       buildCredentials.filter(
@@ -70,7 +77,7 @@ export class SetUpInternalProvisioningProfile {
     } else {
       if (adhocBuildCredentialsExist && enterpriseBuildCredentialsExist) {
         throw new Error(
-          `You're in non-interactive mode. You have set up both adhoc and universal distribution credentials. Please set the 'enterpriseProvisioning' property (to 'adhoc' or 'universal') in eas.json to choose the credentials to use.`
+          `You're in non-interactive mode. You have set up both adhoc and universal distribution credentials. Set the 'enterpriseProvisioning' property (to 'adhoc' or 'universal') in eas.json to choose the credentials to use.`
         );
       } else if (adhocBuildCredentialsExist) {
         return await this.setupAdhocProvisioningProfileAsync(ctx);
@@ -78,7 +85,7 @@ export class SetUpInternalProvisioningProfile {
         return await this.setupUniversalProvisioningProfileAsync(ctx);
       } else {
         throw new Error(
-          `You're in non-interactive mode. EAS CLI couldn't find any credentials suitable for internal distribution. Please run again in interactive mode.`
+          `You're in non-interactive mode. EAS CLI couldn't find any credentials suitable for internal distribution. Run this command again in interactive mode.`
         );
       }
     }
@@ -87,15 +94,18 @@ export class SetUpInternalProvisioningProfile {
   private async setupAdhocProvisioningProfileAsync(
     ctx: CredentialsContext
   ): Promise<IosAppBuildCredentialsFragment> {
-    return await new SetUpAdhocProvisioningProfile(this.app).runAsync(ctx);
+    const { app, target } = this.options;
+    return await new SetUpAdhocProvisioningProfile({ app, target }).runAsync(ctx);
   }
 
   private async setupUniversalProvisioningProfileAsync(
     ctx: CredentialsContext
   ): Promise<IosAppBuildCredentialsFragment> {
-    return await new SetUpProvisioningProfile(this.app, IosDistributionType.Enterprise).runAsync(
-      ctx
-    );
+    return await new SetUpProvisioningProfile(
+      this.options.app,
+      this.options.target,
+      IosDistributionType.Enterprise
+    ).runAsync(ctx);
   }
 
   private async askForDistributionTypeAndSetupAsync(

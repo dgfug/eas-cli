@@ -1,18 +1,6 @@
 import nullthrows from 'nullthrows';
 
 import {
-  AppleDistributionCertificateFragment,
-  AppleProvisioningProfileFragment,
-  IosAppBuildCredentialsFragment,
-  IosDistributionType,
-} from '../../../graphql/generated';
-import { confirmAsync } from '../../../prompts';
-import { CredentialsContext } from '../../context';
-import { MissingCredentialsNonInteractiveError } from '../../errors';
-import { AppLookupParams } from '../api/GraphqlClient';
-import { ProvisioningProfileStoreInfo } from '../appstore/Credentials.types';
-import { validateProvisioningProfileAsync } from '../validators/validateProvisioningProfile';
-import {
   assignBuildCredentialsAsync,
   getBuildCredentialsAsync,
   getProvisioningProfileAsync,
@@ -21,16 +9,39 @@ import { ConfigureProvisioningProfile } from './ConfigureProvisioningProfile';
 import { CreateProvisioningProfile } from './CreateProvisioningProfile';
 import { formatProvisioningProfileFromApple } from './ProvisioningProfileUtils';
 import { SetUpDistributionCertificate } from './SetUpDistributionCertificate';
+import {
+  AppleDistributionCertificateFragment,
+  AppleProvisioningProfileFragment,
+  IosAppBuildCredentialsFragment,
+  IosDistributionType,
+} from '../../../graphql/generated';
+import { learnMore } from '../../../log';
+import { getApplePlatformFromTarget } from '../../../project/ios/target';
+import { confirmAsync } from '../../../prompts';
+import { CredentialsContext } from '../../context';
+import {
+  ForbidCredentialModificationError,
+  InsufficientAuthenticationNonInteractiveError,
+} from '../../errors';
+import { AppLookupParams } from '../api/graphql/types/AppLookupParams';
+import { ProvisioningProfileStoreInfo } from '../appstore/Credentials.types';
+import { AuthenticationMode } from '../appstore/authenticateTypes';
+import { Target } from '../types';
+import { validateProvisioningProfileAsync } from '../validators/validateProvisioningProfile';
 
 /**
  * Sets up either APP_STORE or ENTERPRISE provisioning profiles
  */
 export class SetUpProvisioningProfile {
-  constructor(private app: AppLookupParams, private distributionType: IosDistributionType) {}
+  constructor(
+    private readonly app: AppLookupParams,
+    private readonly target: Target,
+    private readonly distributionType: IosDistributionType
+  ) {}
 
   async areBuildCredentialsSetupAsync(ctx: CredentialsContext): Promise<boolean> {
     const buildCredentials = await getBuildCredentialsAsync(ctx, this.app, this.distributionType);
-    return await validateProvisioningProfileAsync(ctx, this.app, buildCredentials);
+    return await validateProvisioningProfileAsync(ctx, this.target, this.app, buildCredentials);
   }
 
   async assignNewAndDeleteOldProfileAsync(
@@ -40,7 +51,7 @@ export class SetUpProvisioningProfile {
   ): Promise<IosAppBuildCredentialsFragment> {
     const buildCredentials = await this.createAndAssignProfileAsync(ctx, distCert);
     // delete 'currentProfile' since its no longer valid
-    await ctx.ios.deleteProvisioningProfilesAsync([currentProfile.id]);
+    await ctx.ios.deleteProvisioningProfilesAsync(ctx.graphqlClient, [currentProfile.id]);
     return buildCredentials;
   }
 
@@ -48,9 +59,11 @@ export class SetUpProvisioningProfile {
     ctx: CredentialsContext,
     distCert: AppleDistributionCertificateFragment
   ): Promise<IosAppBuildCredentialsFragment> {
-    const provisioningProfile = await new CreateProvisioningProfile(this.app, distCert).runAsync(
-      ctx
-    );
+    const provisioningProfile = await new CreateProvisioningProfile(
+      this.app,
+      this.target,
+      distCert
+    ).runAsync(ctx);
     return await assignBuildCredentialsAsync(
       ctx,
       this.app,
@@ -67,6 +80,7 @@ export class SetUpProvisioningProfile {
   ): Promise<IosAppBuildCredentialsFragment | null> {
     const profileConfigurator = new ConfigureProvisioningProfile(
       this.app,
+      this.target,
       distCert,
       originalProvisioningProfile
     );
@@ -93,9 +107,18 @@ export class SetUpProvisioningProfile {
     if (areBuildCredentialsSetup) {
       return nullthrows(await getBuildCredentialsAsync(ctx, this.app, this.distributionType));
     }
-    if (ctx.nonInteractive) {
-      throw new MissingCredentialsNonInteractiveError(
-        'Provisioning profile is not configured correctly. Please run this command again in interactive mode.'
+    if (ctx.freezeCredentials) {
+      throw new ForbidCredentialModificationError(
+        'Provisioning profile is not configured correctly. Remove the --freeze-credentials flag to configure it.'
+      );
+    } else if (
+      ctx.nonInteractive &&
+      ctx.appStore.defaultAuthenticationMode !== AuthenticationMode.API_KEY
+    ) {
+      throw new InsufficientAuthenticationNonInteractiveError(
+        `In order to configure your Provisioning Profile, authentication with an ASC API key is required in non-interactive mode. ${learnMore(
+          'https://docs.expo.dev/build/building-on-ci/#optional-provide-an-asc-api-token-for-your-apple-team'
+        )}`
       );
     }
 
@@ -105,8 +128,10 @@ export class SetUpProvisioningProfile {
     }
 
     // See if the profile we have exists on the Apple Servers
+    const applePlatform = getApplePlatformFromTarget(this.target);
     const existingProfiles = await ctx.appStore.listProvisioningProfilesAsync(
-      this.app.bundleIdentifier
+      this.app.bundleIdentifier,
+      applePlatform
     );
     const currentProfileFromServer = this.getCurrentProfileStoreInfo(
       existingProfiles,
@@ -116,11 +141,18 @@ export class SetUpProvisioningProfile {
       return await this.assignNewAndDeleteOldProfileAsync(ctx, distCert, currentProfile);
     }
 
-    const confirm = await confirmAsync({
-      message: `${formatProvisioningProfileFromApple(
-        currentProfileFromServer
-      )} \n  Would you like to reuse the original profile?`,
-    });
+    const isNonInteractiveOrUserDidConfirmAsync = async (): Promise<boolean> => {
+      if (ctx.nonInteractive) {
+        return true;
+      }
+      return await confirmAsync({
+        message: `${formatProvisioningProfileFromApple(
+          currentProfileFromServer
+        )} \n  Would you like to reuse the original profile?`,
+      });
+    };
+
+    const confirm = await isNonInteractiveOrUserDidConfirmAsync();
     if (!confirm) {
       return await this.assignNewAndDeleteOldProfileAsync(ctx, distCert, currentProfile);
     }

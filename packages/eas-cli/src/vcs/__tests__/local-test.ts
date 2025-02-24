@@ -18,8 +18,7 @@ describe(Ignore, () => {
       '/root'
     );
 
-    const ignore = new Ignore('/root');
-    await ignore.initIgnoreAsync();
+    const ignore = await Ignore.createAsync('/root');
     expect(ignore.ignores('aaa')).toBe(true);
     expect(ignore.ignores('bbb')).toBe(false);
     expect(ignore.ignores('dir/aaa')).toBe(true);
@@ -36,8 +35,7 @@ describe(Ignore, () => {
       '/root'
     );
 
-    const ignore = new Ignore('/root');
-    await ignore.initIgnoreAsync();
+    const ignore = await Ignore.createAsync('/root');
     expect(ignore.ignores('aaa')).toBe(false);
     expect(ignore.ignores('bbb')).toBe(false);
     expect(ignore.ignores('ccc')).toBe(true);
@@ -54,8 +52,7 @@ describe(Ignore, () => {
       '/root'
     );
 
-    const ignore = new Ignore('/root');
-    await ignore.initIgnoreAsync();
+    const ignore = await Ignore.createAsync('/root');
     expect(ignore.ignores('aaa')).toBe(true);
     expect(ignore.ignores('bbb')).toBe(false);
     expect(ignore.ignores('node_modules/aaa')).toBe(true);
@@ -72,16 +69,26 @@ describe(Ignore, () => {
       '/root'
     );
 
-    const ignore = new Ignore('/root');
-    await ignore.initIgnoreAsync();
+    const ignore = await Ignore.createAsync('/root');
     expect(ignore.ignores('dir/ccc')).toBe(true);
   });
 
   it('ignores .git', async () => {
     vol.fromJSON({}, '/root');
 
-    const ignore = new Ignore('/root');
-    await ignore.initIgnoreAsync();
+    const ignore = await Ignore.createAsync('/root');
     expect(ignore.ignores('.git')).toBe(true);
+  });
+
+  it('does not throw an error if there is a trailing backslash in the gitignore', async () => {
+    vol.fromJSON(
+      {
+        '.gitignore': 'dir\\',
+      },
+      '/root'
+    );
+
+    const ignore = await Ignore.createAsync('/root');
+    expect(() => ignore.ignores('dir/test')).not.toThrowError();
   });
 });

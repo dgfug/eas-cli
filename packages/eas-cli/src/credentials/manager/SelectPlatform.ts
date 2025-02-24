@@ -1,22 +1,31 @@
-import { promptAsync } from '../../prompts';
 import { ManageAndroid } from './ManageAndroid';
 import { ManageIos } from './ManageIos';
+import { Analytics } from '../../analytics/AnalyticsManager';
+import { DynamicConfigContextFn } from '../../commandUtils/context/DynamicProjectConfigContextField';
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
+import { selectPlatformAsync } from '../../platform';
+import { Actor } from '../../user/User';
+import { Client } from '../../vcs/vcs';
+import { CredentialsContextProjectInfo } from '../context';
 
 export class SelectPlatform {
+  constructor(
+    public readonly actor: Actor,
+    public readonly graphqlClient: ExpoGraphqlClient,
+    public readonly vcsClient: Client,
+    public readonly analytics: Analytics,
+    public readonly projectInfo: CredentialsContextProjectInfo | null,
+    public readonly getDynamicPrivateProjectConfigAsync: DynamicConfigContextFn,
+    private readonly flagPlatform?: string
+  ) {}
+
   async runAsync(): Promise<void> {
-    const { platform } = await promptAsync({
-      type: 'select',
-      name: 'platform',
-      message: 'Select platform',
-      choices: [
-        { value: 'android', title: 'Android' },
-        { value: 'ios', title: 'iOS' },
-      ],
-    });
+    const platform = await selectPlatformAsync(this.flagPlatform);
 
     if (platform === 'ios') {
-      return await new ManageIos(new SelectPlatform(), process.cwd()).runAsync();
+      await new ManageIos(this, process.cwd()).runAsync();
+      return;
     }
-    return await new ManageAndroid(new SelectPlatform(), process.cwd()).runAsync();
+    await new ManageAndroid(this, process.cwd()).runAsync();
   }
 }

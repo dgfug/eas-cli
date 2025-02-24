@@ -1,4 +1,8 @@
+import { print } from 'graphql';
 import gql from 'graphql-tag';
+
+import { FingerprintFragmentNode } from './Fingerprint';
+import { SubmissionFragmentNode } from './Submission';
 
 export const BuildFragmentNode = gql`
   fragment BuildFragment on Build {
@@ -13,6 +17,8 @@ export const BuildFragmentNode = gql`
     artifacts {
       buildUrl
       xcodeBuildLogsUrl
+      applicationArchiveUrl
+      buildArtifactsUrl
     }
     initiatingActor {
       __typename
@@ -32,7 +38,6 @@ export const BuildFragmentNode = gql`
       }
     }
     channel
-    releaseChannel
     distribution
     iosEnterpriseProvisioning
     buildProfile
@@ -41,7 +46,49 @@ export const BuildFragmentNode = gql`
     appBuildVersion
     runtimeVersion
     gitCommitHash
+    gitCommitMessage
+    initialQueuePosition
+    queuePosition
+    estimatedWaitTimeLeftSeconds
+    priority
     createdAt
     updatedAt
+    message
+    completedAt
+    expirationDate
+    isForIosSimulator
+    metrics {
+      buildWaitTime
+      buildQueueTime
+      buildDuration
+    }
+  }
+`;
+
+export const BuildFragmentWithSubmissionsNode = gql`
+  ${print(SubmissionFragmentNode)}
+  ${print(BuildFragmentNode)}
+
+  fragment BuildWithSubmissionsFragment on Build {
+    id
+    ...BuildFragment
+    submissions {
+      id
+      ...SubmissionFragment
+    }
+  }
+`;
+
+export const BuildFragmentWithFingerprintNode = gql`
+  ${print(FingerprintFragmentNode)}
+  ${print(BuildFragmentNode)}
+
+  fragment BuildWithFingerprintFragment on Build {
+    id
+    ...BuildFragment
+    fingerprint {
+      id
+      ...FingerprintFragment
+    }
   }
 `;

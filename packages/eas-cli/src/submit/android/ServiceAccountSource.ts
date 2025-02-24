@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import fs from 'fs-extra';
 import nullthrows from 'nullthrows';
 
-import { SetUpGoogleServiceAccountKey } from '../../credentials/android/actions/SetUpGoogleServiceAccountKey';
+import { SetUpGoogleServiceAccountKeyForSubmissions } from '../../credentials/android/actions/SetUpGoogleServiceAccountKeyForSubmissions';
 import { readAndValidateServiceAccountKey } from '../../credentials/android/utils/googleServiceAccountKey';
 import Log, { learnMore } from '../../log';
 import {
@@ -11,7 +11,6 @@ import {
   isApplicationIdValid,
 } from '../../project/android/applicationId';
 import { promptAsync } from '../../prompts';
-import { findAccountByName } from '../../user/Account';
 import { SubmissionContext } from '../context';
 import { isExistingFileAsync } from '../utils/files';
 
@@ -117,7 +116,7 @@ export async function getServiceAccountFromCredentialsServiceAsync(
 ): Promise<ServiceAccountKeyResult> {
   const appLookupParams = {
     account: nullthrows(
-      findAccountByName(ctx.user.accounts, ctx.accountName),
+      ctx.user.accounts.find(a => a.name === ctx.accountName),
       `You do not have access to account: ${ctx.accountName}`
     ),
     projectName: ctx.projectName,
@@ -127,7 +126,9 @@ export async function getServiceAccountFromCredentialsServiceAsync(
   Log.log(
     `Looking up credentials configuration for ${appLookupParams.androidApplicationIdentifier}...`
   );
-  const setupGoogleServiceAccountKeyAction = new SetUpGoogleServiceAccountKey(appLookupParams);
+  const setupGoogleServiceAccountKeyAction = new SetUpGoogleServiceAccountKeyForSubmissions(
+    appLookupParams
+  );
   const androidAppCredentials = await setupGoogleServiceAccountKeyAction.runAsync(
     ctx.credentialsCtx
   );
@@ -169,7 +170,8 @@ async function askForServiceAccountPathAsync(): Promise<string> {
       'A Google Service Account JSON key is required to upload your app to Google Play Store'
     )}.\n` +
       `If you're not sure what this is or how to create one, ${learnMore(
-        'https://expo.fyi/creating-google-service-account'
+        'https://expo.fyi/creating-google-service-account',
+        { learnMoreMessage: 'learn more' }
       )}`
   );
   const { filePath } = await promptAsync({

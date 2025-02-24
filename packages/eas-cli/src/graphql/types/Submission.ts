@@ -18,6 +18,7 @@ export const SubmissionFragmentNode = gql`
       applicationIdentifier
       track
       releaseStatus
+      rollout
     }
     iosConfig {
       ascAppIdentifier
@@ -27,6 +28,6 @@ export const SubmissionFragmentNode = gql`
       errorCode
       message
     }
-    logsUrl
+    logFiles
   }
 `;

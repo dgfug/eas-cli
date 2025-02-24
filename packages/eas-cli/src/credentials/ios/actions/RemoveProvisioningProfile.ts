@@ -3,12 +3,12 @@ import assert from 'assert';
 import { AppleProvisioningProfileIdentifiersFragment } from '../../../graphql/generated';
 import Log from '../../../log';
 import { CredentialsContext } from '../../context';
-import { AppLookupParams } from '../api/GraphqlClient';
+import { AppLookupParams } from '../api/graphql/types/AppLookupParams';
 
 export class RemoveProvisioningProfiles {
   constructor(
-    private apps: AppLookupParams[],
-    private provisioningProfiles: AppleProvisioningProfileIdentifiersFragment[]
+    private readonly apps: AppLookupParams[],
+    private readonly provisioningProfiles: AppleProvisioningProfileIdentifiersFragment[]
   ) {
     assert(
       apps.length === provisioningProfiles.length,
@@ -22,6 +22,7 @@ export class RemoveProvisioningProfiles {
       return;
     }
     await ctx.ios.deleteProvisioningProfilesAsync(
+      ctx.graphqlClient,
       this.provisioningProfiles.map(profile => profile.id)
     );
     const appAndBundles = this.apps

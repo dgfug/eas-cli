@@ -1,16 +1,15 @@
 import { Platform } from '@expo/eas-build-job';
 import {
   BuildProfile,
-  EasJsonReader,
+  EasJsonAccessor,
+  EasJsonUtils,
   ProfileType,
   SubmitProfile,
-  errors,
-  getDefaultSubmitProfile,
 } from '@expo/eas-json';
-import chalk from 'chalk';
+import fs from 'fs-extra';
+import path from 'path';
 
-import Log from '../log';
-import { ExpoChoice, selectAsync } from '../prompts';
+import Log, { learnMore } from '../log';
 
 type EasProfile<T extends ProfileType> = T extends 'build'
   ? BuildProfile<Platform>
@@ -23,109 +22,30 @@ export type ProfileData<T extends ProfileType> = {
 };
 
 export async function getProfilesAsync<T extends ProfileType>({
-  projectDir,
+  easJsonAccessor,
   platforms,
   profileName,
   type,
+  projectDir,
 }: {
-  projectDir: string;
+  easJsonAccessor: EasJsonAccessor;
   platforms: Platform[];
   profileName?: string;
+  projectDir: string;
   type: T;
 }): Promise<ProfileData<T>[]> {
   const results = platforms.map(async function (platform) {
-    if (profileName) {
-      const profile = await readProfileAsync({ projectDir, platform, type, profileName });
-      return {
-        profile,
-        profileName,
-        platform,
-      };
-    }
-
-    try {
-      const profile = await readProfileAsync({
-        projectDir,
-        platform,
-        type,
-        profileName: 'production',
-      });
-      return {
-        profile,
-        profileName: 'production',
-        platform,
-      };
-    } catch (error) {
-      if (!(error instanceof errors.MissingProfileError)) {
-        throw error;
-      }
-    }
-
-    try {
-      const profile = await readProfileAsync({
-        projectDir,
-        platform,
-        type,
-        profileName: 'release',
-      });
-      Log.warn(
-        `The default profile changed from ${chalk.bold('release')} to ${chalk.bold(
-          'production'
-        )}. We detected that you still have a ${chalk.bold(
-          'release'
-        )} build profile, so we are using it. Update eas.json to have a profile named ${chalk.bold(
-          'production'
-        )} under the ${chalk.bold(
-          'build'
-        )} key, or specify which profile you'd like to use with the ${chalk.bold(
-          '--profile'
-        )} flag. This fallback behavior will be removed in the next major version of EAS CLI.`
-      );
-      return {
-        profile,
-        profileName: 'release',
-        platform,
-      };
-    } catch (error) {
-      if (!(error instanceof errors.MissingProfileError)) {
-        throw error;
-      }
-    }
-    const defaultProfile = getDefaultProfile({ platform, type });
-    if (defaultProfile) {
-      return {
-        profile: defaultProfile,
-        profileName: '__default__',
-        platform,
-      };
-    }
-
-    const profileNames = await readProfileNamesAsync({
-      projectDir,
-      type,
-    });
-    if (profileNames.length === 0) {
-      throw new errors.MissingProfileError(
-        `Missing profile in eas.json: ${profileName ?? 'production'}`
-      );
-    }
-    const choices: ExpoChoice<string>[] = profileNames.map(profileName => ({
-      title: profileName,
-      value: profileName,
-    }));
-    const chosenProfileName = await selectAsync(
-      'The "production" profile is missing in eas.json. Pick another profile:',
-      choices
-    );
-    const profile = await readProfileAsync({
-      projectDir,
+    const profile = await readProfileWithOverridesAsync({
+      easJsonAccessor,
       platform,
       type,
-      profileName: chosenProfileName,
+      profileName,
+      projectDir,
     });
+
     return {
       profile,
-      profileName: chosenProfileName,
+      profileName: profileName ?? 'production',
       platform,
     };
   });
@@ -133,50 +53,105 @@ export async function getProfilesAsync<T extends ProfileType>({
   return await Promise.all(results);
 }
 
-async function readProfileAsync<T extends ProfileType>({
-  projectDir,
+async function maybeSetNodeVersionFromFileAsync(
+  projectDir: string,
+  profile: BuildProfile<Platform>
+): Promise<void> {
+  if (profile?.node) {
+    return;
+  }
+  const nodeVersion = await getNodeVersionFromFileAsync(projectDir);
+  if (nodeVersion) {
+    Log.log(
+      `The EAS build profile does not specify a Node.js version. Using the version specified in .nvmrc: ${nodeVersion} `
+    );
+
+    profile.node = nodeVersion;
+  }
+}
+
+async function getNodeVersionFromFileAsync(projectDir: string): Promise<string | undefined> {
+  const nvmrcPath = path.join(projectDir, '.nvmrc');
+  if (!(await fs.pathExists(nvmrcPath))) {
+    return;
+  }
+
+  let nodeVersion: string;
+  try {
+    nodeVersion = (await fs.readFile(nvmrcPath, 'utf8')).toString().trim();
+  } catch {
+    return undefined;
+  }
+  return nodeVersion;
+}
+
+async function readProfileWithOverridesAsync<T extends ProfileType>({
+  easJsonAccessor,
   platform,
   type,
   profileName,
-}: {
-  projectDir: string;
-  platform: Platform;
-  type: T;
-  profileName: string;
-}): Promise<EasProfile<T>> {
-  const easJsonReader = new EasJsonReader(projectDir);
-  if (type === 'build') {
-    return (await easJsonReader.getBuildProfileAsync(platform, profileName)) as EasProfile<T>;
-  } else {
-    return (await easJsonReader.getSubmitProfileAsync(platform, profileName)) as EasProfile<T>;
-  }
-}
-
-function getDefaultProfile<T extends ProfileType>({
-  platform,
-  type,
-}: {
-  platform: Platform;
-  type: T;
-}): EasProfile<T> | null {
-  if (type === 'build') {
-    return null;
-  } else {
-    return getDefaultSubmitProfile(platform) as EasProfile<T>;
-  }
-}
-
-async function readProfileNamesAsync({
   projectDir,
-  type,
 }: {
+  easJsonAccessor: EasJsonAccessor;
+  platform: Platform;
+  type: T;
+  profileName?: string;
   projectDir: string;
-  type: ProfileType;
-}): Promise<string[]> {
-  const easJsonReader = new EasJsonReader(projectDir);
+}): Promise<EasProfile<T>> {
   if (type === 'build') {
-    return await easJsonReader.getBuildProfileNamesAsync();
+    const buildProfile = await EasJsonUtils.getBuildProfileAsync(
+      easJsonAccessor,
+      platform,
+      profileName
+    );
+
+    await maybePrintBuildProfileDeprecationWarningsAsync(easJsonAccessor, platform, profileName);
+    await maybeSetNodeVersionFromFileAsync(projectDir, buildProfile);
+
+    return buildProfile as EasProfile<T>;
   } else {
-    return await easJsonReader.getSubmitProfileNamesAsync();
+    return (await EasJsonUtils.getSubmitProfileAsync(
+      easJsonAccessor,
+      platform,
+      profileName
+    )) as EasProfile<T>;
   }
+}
+
+let hasPrintedDeprecationWarnings = false;
+
+/**
+ * Only for testing purposes
+ */
+export function clearHasPrintedDeprecationWarnings(): void {
+  hasPrintedDeprecationWarnings = false;
+}
+
+export async function maybePrintBuildProfileDeprecationWarningsAsync(
+  easJsonAccessor: EasJsonAccessor,
+  platform: Platform,
+  profileName?: string
+): Promise<void> {
+  if (hasPrintedDeprecationWarnings) {
+    return;
+  }
+  const deprecationWarnings = await EasJsonUtils.getBuildProfileDeprecationWarningsAsync(
+    easJsonAccessor,
+    platform,
+    profileName ?? 'production'
+  );
+  if (deprecationWarnings.length === 0) {
+    return;
+  }
+  Log.newLine();
+  Log.warn('Detected deprecated fields in eas.json:');
+  for (const warning of deprecationWarnings) {
+    const warnlog: string = warning.message.map(line => `\t${line}`).join('\n');
+    Log.warn(warnlog);
+    if (warning.docsUrl) {
+      Log.warn(`\t${learnMore(warning.docsUrl)}`);
+    }
+    Log.newLine();
+  }
+  hasPrintedDeprecationWarnings = true;
 }

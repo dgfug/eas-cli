@@ -1,4 +1,3 @@
-import { getConfig } from '@expo/config';
 import { Platform, Workflow } from '@expo/eas-build-job';
 import { Flags } from '@oclif/core';
 import chalk from 'chalk';
@@ -8,17 +7,17 @@ import { ensureProjectConfiguredAsync } from '../../build/configure';
 import EasCommand from '../../commandUtils/EasCommand';
 import Log, { learnMore } from '../../log';
 import { RequestedPlatform } from '../../platform';
-import { findProjectRootAsync, isExpoUpdatesInstalled } from '../../project/projectUtils';
+import { isExpoUpdatesInstalled, isUsingEASUpdate } from '../../project/projectUtils';
 import { resolveWorkflowAsync } from '../../project/workflow';
 import { promptAsync } from '../../prompts';
 import { syncUpdatesConfigurationAsync as syncAndroidUpdatesConfigurationAsync } from '../../update/android/UpdatesModule';
+import { ensureEASUpdateIsConfiguredInEasJsonAsync } from '../../update/configure';
 import { syncUpdatesConfigurationAsync as syncIosUpdatesConfigurationAsync } from '../../update/ios/UpdatesModule';
-import { getVcsClient } from '../../vcs';
 
 export default class BuildConfigure extends EasCommand {
-  static description = 'configure the project to support EAS Build';
+  static override description = 'configure the project to support EAS Build';
 
-  static flags = {
+  static override flags = {
     platform: Flags.enum({
       description: 'Platform to configure',
       char: 'p',
@@ -26,16 +25,30 @@ export default class BuildConfigure extends EasCommand {
     }),
   };
 
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectConfig,
+    ...this.ContextOptions.LoggedIn,
+    ...this.ContextOptions.Vcs,
+  };
+
   async runAsync(): Promise<void> {
     const { flags } = await this.parse(BuildConfigure);
+    const {
+      privateProjectConfig: { exp, projectId, projectDir },
+      vcsClient,
+    } = await this.getContextAsync(BuildConfigure, {
+      nonInteractive: false,
+      withServerSideEnvironment: null,
+    });
 
     Log.log(
       '💡 The following process will configure your iOS and/or Android project to be compatible with EAS Build. These changes only apply to your local project files and you can safely revert them at any time.'
     );
 
-    await getVcsClient().ensureRepoExistsAsync();
+    // BuildConfigure.ContextOptions.Vcs.client.getValueAsync()
 
-    const projectDir = await findProjectRootAsync();
+    await vcsClient.ensureRepoExistsAsync();
+
     const expoUpdatesIsInstalled = isExpoUpdatesInstalled(projectDir);
 
     const platform =
@@ -48,26 +61,34 @@ export default class BuildConfigure extends EasCommand {
 
     // ensure eas.json exists
     Log.newLine();
-    await ensureProjectConfiguredAsync({
+    const didCreateEasJson = await ensureProjectConfiguredAsync({
       projectDir,
       nonInteractive: false,
+      vcsClient,
     });
+    if (didCreateEasJson && isUsingEASUpdate(exp, projectId)) {
+      await ensureEASUpdateIsConfiguredInEasJsonAsync(projectDir);
+    }
 
     // configure expo-updates
     if (expoUpdatesIsInstalled) {
-      const { exp } = getConfig(projectDir, { skipSDKVersionRequirement: true });
-
       if ([RequestedPlatform.Android, RequestedPlatform.All].includes(platform)) {
-        const workflow = await resolveWorkflowAsync(projectDir, Platform.ANDROID);
+        const workflow = await resolveWorkflowAsync(projectDir, Platform.ANDROID, vcsClient);
         if (workflow === Workflow.GENERIC) {
-          await syncAndroidUpdatesConfigurationAsync(projectDir, exp);
+          await syncAndroidUpdatesConfigurationAsync({ projectDir, exp, workflow, env: undefined });
         }
       }
 
       if ([RequestedPlatform.Ios, RequestedPlatform.All].includes(platform)) {
-        const workflow = await resolveWorkflowAsync(projectDir, Platform.IOS);
+        const workflow = await resolveWorkflowAsync(projectDir, Platform.IOS, vcsClient);
         if (workflow === Workflow.GENERIC) {
-          await syncIosUpdatesConfigurationAsync(projectDir, exp);
+          await syncIosUpdatesConfigurationAsync({
+            vcsClient,
+            projectDir,
+            exp,
+            workflow,
+            env: undefined,
+          });
         }
       }
     }

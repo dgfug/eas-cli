@@ -2,14 +2,16 @@ import fs from 'fs-extra';
 import { vol } from 'memfs';
 import os from 'os';
 
-import { asMock } from '../../../__tests__/utils';
 import { jester as mockJester } from '../../../credentials/__tests__/fixtures-constants';
 import { promptAsync } from '../../../prompts';
+import { resolveVcsClient } from '../../../vcs';
 import { resolveGradleBuildContextAsync } from '../gradle';
 
 jest.mock('fs');
 jest.mock('../../../prompts');
 jest.mock('../../../user/actions', () => ({ ensureLoggedInAsync: jest.fn(() => mockJester) }));
+
+const vcsClient = resolveVcsClient();
 
 beforeEach(async () => {
   vol.reset();
@@ -17,7 +19,7 @@ beforeEach(async () => {
   // this fixes a weird error with tempy in @expo/image-utils
   await fs.mkdirp(os.tmpdir());
 
-  asMock(promptAsync).mockReset();
+  jest.mocked(promptAsync).mockReset();
 });
 
 describe(resolveGradleBuildContextAsync, () => {
@@ -37,7 +39,7 @@ describe(resolveGradleBuildContextAsync, () => {
         '/app'
       );
 
-      const gradleContext = await resolveGradleBuildContextAsync('/app', {} as any);
+      const gradleContext = await resolveGradleBuildContextAsync('/app', {} as any, vcsClient);
       expect(gradleContext).toEqual({ moduleName: 'app' });
     });
     it('resolves to flavor', async () => {
@@ -60,9 +62,13 @@ describe(resolveGradleBuildContextAsync, () => {
         '/app'
       );
 
-      const gradleContext = await resolveGradleBuildContextAsync('/app', {
-        gradleCommand: ':app:buildAbcRelease',
-      } as any);
+      const gradleContext = await resolveGradleBuildContextAsync(
+        '/app',
+        {
+          gradleCommand: ':app:buildAbcRelease',
+        } as any,
+        vcsClient
+      );
       expect(gradleContext).toEqual({ moduleName: 'app', flavor: 'abc' });
     });
 
@@ -74,9 +80,13 @@ describe(resolveGradleBuildContextAsync, () => {
         },
         '/app'
       );
-      const gradleContext = await resolveGradleBuildContextAsync('/app', {
-        gradleCommand: ':app:buildAbcRelease',
-      } as any);
+      const gradleContext = await resolveGradleBuildContextAsync(
+        '/app',
+        {
+          gradleCommand: ':app:buildAbcRelease',
+        } as any,
+        vcsClient
+      );
       expect(gradleContext).toEqual(undefined);
     });
     it('returns undefined if flavor does not exist', async () => {
@@ -94,16 +104,20 @@ describe(resolveGradleBuildContextAsync, () => {
         '/app'
       );
 
-      const gradleContext = await resolveGradleBuildContextAsync('/app', {
-        gradleCommand: ':app:buildAbcRelease',
-      } as any);
+      const gradleContext = await resolveGradleBuildContextAsync(
+        '/app',
+        {
+          gradleCommand: ':app:buildAbcRelease',
+        } as any,
+        vcsClient
+      );
       expect(gradleContext).toEqual(undefined);
     });
   });
 
   describe('managed projects', () => {
     it('resolves to { moduleName: app } for managed projects', async () => {
-      const gradleContext = await resolveGradleBuildContextAsync('/app', {} as any);
+      const gradleContext = await resolveGradleBuildContextAsync('/app', {} as any, {} as any);
       expect(gradleContext).toEqual({ moduleName: 'app' });
     });
   });

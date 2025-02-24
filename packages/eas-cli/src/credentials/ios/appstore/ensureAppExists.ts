@@ -1,16 +1,19 @@
-import { App, BundleId } from '@expo/apple-utils';
+import { App, BundleId, RequestContext } from '@expo/apple-utils';
 import { JSONObject } from '@expo/json-file';
 import chalk from 'chalk';
+import { randomBytes } from 'node:crypto';
 
-import Log from '../../../log';
-import { ora } from '../../../ora';
-import { AuthCtx, getRequestContext } from './authenticate';
+import { getRequestContext, isUserAuthCtx } from './authenticate';
+import { AuthCtx, UserAuthCtx } from './authenticateTypes';
 import { syncCapabilitiesForEntitlementsAsync } from './bundleIdCapabilities';
 import { syncCapabilityIdentifiersForEntitlementsAsync } from './capabilityIdentifiers';
 import { assertContractMessagesAsync } from './contractMessages';
+import Log from '../../../log';
+import { ora } from '../../../ora';
 
 export interface IosCapabilitiesOptions {
   entitlements: JSONObject;
+  usesBroadcastPushNotifications: boolean;
 }
 
 export interface AppLookupParams {
@@ -24,7 +27,7 @@ export async function ensureBundleIdExistsAsync(
   { accountName, projectName, bundleIdentifier }: AppLookupParams,
   options?: IosCapabilitiesOptions
 ): Promise<void> {
-  return ensureBundleIdExistsWithNameAsync(
+  await ensureBundleIdExistsWithNameAsync(
     authCtx,
     {
       name: `@${accountName}/${projectName}`,
@@ -61,7 +64,7 @@ export async function ensureBundleIdExistsWithNameAsync(
       spinner.fail(
         `The bundle identifier ${chalk.bold(bundleIdentifier)} is not available to team "${
           authCtx.team.name
-        }" (${authCtx.team.id}), please change it in your app config and try again.`
+        }" (${authCtx.team.id}), change it in your app config and try again.`
       );
     } else {
       spinner.fail(`Failed to register bundle identifier ${chalk.dim(bundleIdentifier)}`);
@@ -72,7 +75,13 @@ export async function ensureBundleIdExistsWithNameAsync(
         // Unable to process request - PLA Update available - You currently don't have access to this membership resource. To resolve this issue, agree to the latest Program License Agreement in your developer account.
         err.message.match(/agree/)
       ) {
-        await assertContractMessagesAsync(context);
+        if (isUserAuthCtx(authCtx)) {
+          await assertContractMessagesAsync(context);
+        } else {
+          Log.warn(
+            `You currently don't have access to this membership resource. To resolve this issue, agree to the latest Program License Agreement in your developer account.`
+          );
+        }
       }
     }
 
@@ -86,7 +95,7 @@ export async function ensureBundleIdExistsWithNameAsync(
 
 export async function syncCapabilitiesAsync(
   bundleId: BundleId,
-  { entitlements }: IosCapabilitiesOptions
+  { entitlements, ...rest }: IosCapabilitiesOptions
 ): Promise<void> {
   const spinner = ora(`Syncing capabilities`).start();
 
@@ -98,7 +107,8 @@ export async function syncCapabilitiesAsync(
   try {
     const { enabled, disabled } = await syncCapabilitiesForEntitlementsAsync(
       bundleId,
-      entitlements
+      entitlements,
+      rest
     );
     const results =
       [buildMessage('Enabled', enabled), buildMessage('Disabled', disabled)]
@@ -112,7 +122,7 @@ export async function syncCapabilitiesAsync(
   }
 
   // Always run this after syncing the capabilities...
-  await syncCapabilityIdentifiersAsync(bundleId, { entitlements });
+  await syncCapabilityIdentifiersAsync(bundleId, { entitlements, ...rest });
 }
 
 const buildMessage = (title: string, items: string[]): string =>
@@ -150,7 +160,7 @@ export async function syncCapabilityIdentifiersAsync(
 }
 
 export async function ensureAppExistsAsync(
-  authCtx: AuthCtx,
+  userAuthCtx: UserAuthCtx,
   {
     name,
     language,
@@ -165,7 +175,7 @@ export async function ensureAppExistsAsync(
     sku?: string;
   }
 ): Promise<App> {
-  const context = getRequestContext(authCtx);
+  const context = getRequestContext(userAuthCtx);
   const spinner = ora(`Linking to App Store Connect ${chalk.dim(bundleIdentifier)}`).start();
 
   let app = await App.findAsync(context, { bundleId: bundleIdentifier });
@@ -176,8 +186,10 @@ export async function ensureAppExistsAsync(
     try {
       // Assert contract errors when the user needs to create an app.
       await assertContractMessagesAsync(context, spinner);
-
-      app = await App.createAsync(context, {
+      /**
+       * **Does not support App Store Connect API (CI).**
+       */
+      app = await createAppAsync(context, {
         bundleId: bundleIdentifier,
         name,
         primaryLocale: language,
@@ -186,15 +198,14 @@ export async function ensureAppExistsAsync(
       });
     } catch (error: any) {
       if (error.message.match(/An App ID with Identifier '(.*)' is not available/)) {
-        const providerName = authCtx.authState?.session.provider.name;
         throw new Error(
-          `\nThe bundle identifier "${bundleIdentifier}" is not available to provider "${providerName}". Please change it in your app config and try again.\n`
+          `\nThe bundle identifier "${bundleIdentifier}" is not available to provider "${userAuthCtx.authState?.session.provider.name}. Change it in your app config and try again.\n`
         );
       }
 
       spinner.fail(`Failed to create App Store app ${chalk.dim(name)}`);
       error.message +=
-        '\nPlease visit https://appstoreconnect.apple.com and resolve any warnings, then try again.';
+        '\nVisit https://appstoreconnect.apple.com and resolve any warnings, then try again.';
       throw error;
     }
   } else {
@@ -204,4 +215,121 @@ export async function ensureAppExistsAsync(
     `Prepared App Store Connect for ${chalk.bold(name)} ${chalk.dim(bundleIdentifier)}`
   );
   return app;
+}
+
+function sanitizeName(name: string): string {
+  return (
+    name
+      // Replace emojis with a `-`
+      .replace(/[\p{Emoji}]/gu, '-')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+  );
+}
+
+export async function createAppAsync(
+  context: RequestContext,
+  props: {
+    bundleId: string;
+    name: string;
+    primaryLocale?: string;
+    companyName?: string;
+    sku?: string;
+  },
+  retryCount = 0
+): Promise<App> {
+  try {
+    /**
+     * **Does not support App Store Connect API (CI).**
+     */
+    return await App.createAsync(context, props);
+  } catch (error) {
+    if (retryCount >= 5) {
+      throw error;
+    }
+    if (error instanceof Error) {
+      const handleDuplicateNameErrorAsync = async (): Promise<App> => {
+        const generatedName = props.name + ` (${randomBytes(3).toString('hex')})`;
+        Log.warn(
+          `App name "${props.name}" is already taken. Using generated name "${generatedName}" which can be changed later from https://appstoreconnect.apple.com.`
+        );
+        // Sanitize the name and try again.
+        return await createAppAsync(
+          context,
+          {
+            ...props,
+            name: generatedName,
+          },
+          retryCount + 1
+        );
+      };
+
+      if (isAppleError(error)) {
+        // New error class that is thrown when the name is already taken but belongs to you.
+        if (
+          error.data.errors.some(
+            e =>
+              e.code === 'ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE.SAME_ACCOUNT' ||
+              e.code === 'ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE.DIFFERENT_ACCOUNT'
+          )
+        ) {
+          return await handleDuplicateNameErrorAsync();
+        }
+      }
+
+      if ('code' in error && typeof error.code === 'string') {
+        if (
+          // Name is invalid
+          error.code === 'APP_CREATE_NAME_INVALID'
+          // UnexpectedAppleResponse: An attribute value has invalid characters. - App Name contains certain Unicode symbols, emoticons, diacritics, special characters, or private use characters that are not permitted.
+          // Name is taken
+        ) {
+          const sanitizedName = sanitizeName(props.name);
+          if (sanitizedName === props.name) {
+            throw error;
+          }
+          Log.warn(
+            `App name "${props.name}" contains invalid characters. Using sanitized name "${sanitizedName}" which can be changed later from https://appstoreconnect.apple.com.`
+          );
+          // Sanitize the name and try again.
+          return await createAppAsync(
+            context,
+            {
+              ...props,
+              name: sanitizedName,
+            },
+            retryCount + 1
+          );
+        }
+
+        if (
+          // UnexpectedAppleResponse: The provided entity includes an attribute with a value that has already been used on a different account. - The App Name you entered is already being used. If you have trademark rights to
+          // this name and would like it released for your use, submit a claim.
+          error.code === 'APP_CREATE_NAME_UNAVAILABLE'
+        ) {
+          return await handleDuplicateNameErrorAsync();
+        }
+      }
+    }
+
+    throw error;
+  }
+}
+
+export function isAppleError(error: any): error is {
+  data: {
+    errors: {
+      id: string;
+      status: string;
+      /** 'ENTITY_ERROR.ATTRIBUTE.INVALID.INVALID_CHARACTERS' */
+      code: string;
+      /** 'An attribute value has invalid characters.' */
+      title: string;
+      /** 'App Name contains certain Unicode symbols, emoticons, diacritics, special characters, or private use characters that are not permitted.' */
+      detail: string;
+    }[];
+  };
+} {
+  return 'data' in error && 'errors' in error.data && Array.isArray(error.data.errors);
 }

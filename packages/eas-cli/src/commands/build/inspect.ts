@@ -4,14 +4,13 @@ import fs from 'fs-extra';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
+import { LocalBuildMode } from '../../build/local';
 import { runBuildAndSubmitAsync } from '../../build/runBuildAndSubmit';
 import EasCommand from '../../commandUtils/EasCommand';
 import Log from '../../log';
 import { ora } from '../../ora';
 import { RequestedPlatform } from '../../platform';
-import { findProjectRootAsync } from '../../project/projectUtils';
 import { getTmpDirectory } from '../../utils/paths';
-import { getVcsClient } from '../../vcs';
 
 enum InspectStage {
   ARCHIVE = 'archive',
@@ -25,16 +24,17 @@ const STAGE_DESCRIPTION = `Stage of the build you want to inspect.
     post-build - builds the native project and leaves the output directory for inspection`;
 
 export default class BuildInspect extends EasCommand {
-  static description =
+  static override description =
     'inspect the state of the project at specific build stages, useful for troubleshooting';
 
-  static flags = {
+  static override flags = {
     platform: Flags.enum({
       char: 'p',
       options: [RequestedPlatform.Android, RequestedPlatform.Ios],
       required: true,
     }),
     profile: Flags.string({
+      char: 'e',
       description:
         'Name of the build profile from eas.json. Defaults to "production" if defined in eas.json.',
       helpValue: 'PROFILE_NAME',
@@ -61,8 +61,27 @@ export default class BuildInspect extends EasCommand {
     }),
   };
 
+  static override contextDefinition = {
+    ...this.ContextOptions.LoggedIn,
+    ...this.ContextOptions.DynamicProjectConfig,
+    ...this.ContextOptions.ProjectDir,
+    ...this.ContextOptions.Analytics,
+    ...this.ContextOptions.Vcs,
+  };
+
   async runAsync(): Promise<void> {
     const { flags } = await this.parse(BuildInspect);
+    const {
+      loggedIn: { actor, graphqlClient },
+      getDynamicPrivateProjectConfigAsync,
+      projectDir,
+      analytics,
+      vcsClient,
+    } = await this.getContextAsync(BuildInspect, {
+      nonInteractive: false,
+      withServerSideEnvironment: null,
+    });
+
     const outputDirectory = path.resolve(process.cwd(), flags.output);
     const tmpWorkingdir = path.join(getTmpDirectory(), uuidv4());
 
@@ -75,34 +94,42 @@ export default class BuildInspect extends EasCommand {
     await this.prepareOutputDirAsync(outputDirectory, flags.force);
 
     if (flags.stage === InspectStage.ARCHIVE) {
-      const vcs = getVcsClient();
-      await vcs.ensureRepoExistsAsync();
-      await vcs.makeShallowCopyAsync(tmpWorkingdir);
+      await vcsClient.ensureRepoExistsAsync();
+      await vcsClient.makeShallowCopyAsync(tmpWorkingdir);
       await this.copyToOutputDirAsync(tmpWorkingdir, outputDirectory);
     } else {
-      const projectDir = await findProjectRootAsync();
       try {
-        await runBuildAndSubmitAsync(projectDir, {
-          nonInteractive: false,
-          wait: true,
-          clearCache: false,
-          json: false,
-          autoSubmit: false,
-          requestedPlatform: flags.platform,
-          profile: flags.profile,
-          localBuildOptions: {
-            enable: true,
-            ...(flags.stage === InspectStage.PRE_BUILD ? { skipNativeBuild: true } : {}),
-            ...(flags.stage === InspectStage.POST_BUILD ? { skipCleanup: true } : {}),
-            verbose: flags.verbose,
-            workingdir: tmpWorkingdir,
-            artifactsDir: path.join(tmpWorkingdir, 'artifacts'),
+        await runBuildAndSubmitAsync({
+          graphqlClient,
+          analytics,
+          vcsClient,
+          projectDir,
+          flags: {
+            nonInteractive: false,
+            freezeCredentials: false,
+            wait: true,
+            clearCache: false,
+            json: false,
+            autoSubmit: false,
+            requestedPlatform: flags.platform,
+            profile: flags.profile,
+            localBuildOptions: {
+              localBuildMode: LocalBuildMode.LOCAL_BUILD_PLUGIN,
+              ...(flags.stage === InspectStage.PRE_BUILD ? { skipNativeBuild: true } : {}),
+              ...(flags.stage === InspectStage.POST_BUILD ? { skipCleanup: true } : {}),
+              verbose: flags.verbose,
+              workingdir: tmpWorkingdir,
+              artifactsDir: path.join(tmpWorkingdir, 'artifacts'),
+            },
+            repack: false,
           },
+          actor,
+          getDynamicPrivateProjectConfigAsync,
         });
         if (!flags.verbose) {
           Log.log(chalk.green('Build successful'));
         }
-      } catch (err) {
+      } catch {
         if (!flags.verbose) {
           Log.error('Build failed');
           Log.error(`Re-run this command with ${chalk.bold('--verbose')} flag to see the logs`);

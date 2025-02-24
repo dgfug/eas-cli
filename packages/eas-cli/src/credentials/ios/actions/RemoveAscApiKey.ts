@@ -1,12 +1,11 @@
-import { AppStoreConnectApiKeyFragment } from '../../../graphql/generated';
+import { selectAscApiKeysFromAccountAsync } from './AscApiKeyUtils';
+import { AccountFragment, AppStoreConnectApiKeyFragment } from '../../../graphql/generated';
 import Log from '../../../log';
 import { confirmAsync } from '../../../prompts';
-import { Account } from '../../../user/Account';
 import { CredentialsContext } from '../../context';
-import { selectAscApiKeysFromAccountAsync } from './AscApiKeyUtils';
 
 export class SelectAndRemoveAscApiKey {
-  constructor(private account: Account) {}
+  constructor(private readonly account: AccountFragment) {}
 
   async runAsync(ctx: CredentialsContext): Promise<void> {
     const selected = await selectAscApiKeysFromAccountAsync(ctx, this.account);
@@ -19,7 +18,7 @@ export class SelectAndRemoveAscApiKey {
 }
 
 export class RemoveAscApiKey {
-  constructor(private ascApiKey: AppStoreConnectApiKeyFragment) {}
+  constructor(private readonly ascApiKey: AppStoreConnectApiKeyFragment) {}
 
   public async runAsync(ctx: CredentialsContext): Promise<void> {
     if (ctx.nonInteractive) {
@@ -36,7 +35,7 @@ export class RemoveAscApiKey {
     }
 
     Log.log('Removing API Key');
-    await ctx.ios.deleteAscApiKeyAsync(this.ascApiKey.id);
+    await ctx.ios.deleteAscApiKeyAsync(ctx.graphqlClient, this.ascApiKey.id);
 
     let shouldRevoke = false;
     if (!ctx.nonInteractive) {

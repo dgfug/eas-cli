@@ -1,34 +1,39 @@
 import { print } from 'graphql';
 import gql from 'graphql-tag';
 
-import { graphqlClient, withErrorHandlingAsync } from '../../../../../graphql/client';
+import { ExpoGraphqlClient } from '../../../../../commandUtils/context/contextUtils/createGraphqlClient';
+import { withErrorHandlingAsync } from '../../../../../graphql/client';
 import {
   AppleTeamByIdentifierQuery,
   AppleTeamFragment,
   AppleTeamsByAccountNameQuery,
+  AppleTeamsByAccountNameQueryVariables,
 } from '../../../../../graphql/generated';
 import { AppleTeamFragmentNode } from '../../../../../graphql/types/credentials/AppleTeam';
 
 export const AppleTeamQuery = {
-  async getAllForAccountAsync(accountName: string): Promise<AppleTeamFragment[]> {
+  async getAllForAccountAsync(
+    graphqlClient: ExpoGraphqlClient,
+    { accountName, offset, limit }: AppleTeamsByAccountNameQueryVariables
+  ): Promise<AppleTeamFragment[]> {
     const data = await withErrorHandlingAsync(
       graphqlClient
         .query<AppleTeamsByAccountNameQuery>(
           gql`
-            query AppleTeamsByAccountName($accountName: String!) {
+            query AppleTeamsByAccountName($accountName: String!, $offset: Int, $limit: Int) {
               account {
                 byName(accountName: $accountName) {
                   id
-                  appleTeams {
+                  appleTeams(offset: $offset, limit: $limit) {
                     id
-                    appleTeamName
-                    appleTeamIdentifier
+                    ...AppleTeamFragment
                   }
                 }
               }
             }
+            ${print(AppleTeamFragmentNode)}
           `,
-          { accountName },
+          { accountName, offset, limit },
           {
             additionalTypenames: ['AppleTeam'],
           }
@@ -36,10 +41,10 @@ export const AppleTeamQuery = {
         .toPromise()
     );
 
-    return data.account.byName.appleTeams;
+    return data.account.byName.appleTeams ?? [];
   },
-
   async getByAppleTeamIdentifierAsync(
+    graphqlClient: ExpoGraphqlClient,
     accountId: string,
     appleTeamIdentifier: string
   ): Promise<AppleTeamFragment | null> {

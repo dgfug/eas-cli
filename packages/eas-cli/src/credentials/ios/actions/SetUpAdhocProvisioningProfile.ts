@@ -1,9 +1,16 @@
+import { ProfileType } from '@expo/apple-utils';
+import { Errors } from '@oclif/core';
 import assert from 'assert';
 import chalk from 'chalk';
 import nullthrows from 'nullthrows';
 
+import { resolveAppleTeamIfAuthenticatedAsync } from './AppleTeamUtils';
+import { assignBuildCredentialsAsync, getBuildCredentialsAsync } from './BuildCredentialsUtils';
+import { chooseDevicesAsync, formatDeviceLabel } from './DeviceUtils';
+import { SetUpDistributionCertificate } from './SetUpDistributionCertificate';
 import DeviceCreateAction, { RegistrationMethod } from '../../../devices/actions/create/action';
 import {
+  AppleAppIdentifierFragment,
   AppleDeviceFragment,
   AppleDistributionCertificateFragment,
   AppleProvisioningProfileFragment,
@@ -12,16 +19,21 @@ import {
   IosDistributionType,
 } from '../../../graphql/generated';
 import Log from '../../../log';
-import { confirmAsync, pressAnyKeyToContinueAsync, promptAsync } from '../../../prompts';
+import { getApplePlatformFromTarget } from '../../../project/ios/target';
+import {
+  confirmAsync,
+  pressAnyKeyToContinueAsync,
+  promptAsync,
+  selectAsync,
+} from '../../../prompts';
 import differenceBy from '../../../utils/expodash/differenceBy';
 import { CredentialsContext } from '../../context';
 import { MissingCredentialsNonInteractiveError } from '../../errors';
-import { AppLookupParams } from '../api/GraphqlClient';
+import { AppLookupParams } from '../api/graphql/types/AppLookupParams';
+import { ProvisioningProfile } from '../appstore/Credentials.types';
+import { ApplePlatform } from '../appstore/constants';
+import { Target } from '../types';
 import { validateProvisioningProfileAsync } from '../validators/validateProvisioningProfile';
-import { resolveAppleTeamIfAuthenticatedAsync } from './AppleTeamUtils';
-import { assignBuildCredentialsAsync, getBuildCredentialsAsync } from './BuildCredentialsUtils';
-import { chooseDevicesAsync, formatDeviceLabel } from './DeviceUtils';
-import { SetUpDistributionCertificate } from './SetUpDistributionCertificate';
 
 enum ReuseAction {
   Yes,
@@ -29,12 +41,18 @@ enum ReuseAction {
   No,
 }
 
+interface Options {
+  app: AppLookupParams;
+  target: Target;
+}
+
 export class SetUpAdhocProvisioningProfile {
-  constructor(private app: AppLookupParams) {}
+  constructor(private readonly options: Options) {}
 
   async runAsync(ctx: CredentialsContext): Promise<IosAppBuildCredentialsFragment> {
+    const { app } = this.options;
     const distCert = await new SetUpDistributionCertificate(
-      this.app,
+      app,
       IosDistributionType.AdHoc
     ).runAsync(ctx);
 
@@ -42,17 +60,17 @@ export class SetUpAdhocProvisioningProfile {
 
     if (ctx.nonInteractive) {
       if (areBuildCredentialsSetup) {
-        return nullthrows(await getBuildCredentialsAsync(ctx, this.app, IosDistributionType.AdHoc));
+        return nullthrows(await getBuildCredentialsAsync(ctx, app, IosDistributionType.AdHoc));
       } else {
         throw new MissingCredentialsNonInteractiveError(
-          'Provisioning profile is not configured correctly. Please run this command again in interactive mode.'
+          'Provisioning profile is not configured correctly. Run this command again in interactive mode.'
         );
       }
     }
 
     const currentBuildCredentials = await getBuildCredentialsAsync(
       ctx,
-      this.app,
+      app,
       IosDistributionType.AdHoc
     );
     if (areBuildCredentialsSetup) {
@@ -69,9 +87,11 @@ export class SetUpAdhocProvisioningProfile {
     ctx: CredentialsContext,
     distCert: AppleDistributionCertificateFragment
   ): Promise<IosAppBuildCredentialsFragment> {
+    const { app, target } = this.options;
+
     const currentBuildCredentials = await getBuildCredentialsAsync(
       ctx,
-      this.app,
+      app,
       IosDistributionType.AdHoc
     );
 
@@ -80,12 +100,16 @@ export class SetUpAdhocProvisioningProfile {
       distCert.appleTeam ?? currentBuildCredentials?.provisioningProfile?.appleTeam ?? null;
     if (!appleTeam) {
       await ctx.appStore.ensureAuthenticatedAsync();
-      appleTeam = await resolveAppleTeamIfAuthenticatedAsync(ctx, this.app);
+      appleTeam = await resolveAppleTeamIfAuthenticatedAsync(ctx, app);
     }
     assert(appleTeam, 'Apple Team must be defined here');
 
     // 2. Fetch devices registered on EAS servers
-    let registeredAppleDevices = await ctx.ios.getDevicesForAppleTeamAsync(this.app, appleTeam);
+    let registeredAppleDevices = await ctx.ios.getDevicesForAppleTeamAsync(
+      ctx.graphqlClient,
+      app,
+      appleTeam
+    );
     if (registeredAppleDevices.length === 0) {
       const shouldRegisterDevices = await confirmAsync({
         message: `You don't have any registered devices yet. Would you like to register them now?`,
@@ -109,41 +133,38 @@ export class SetUpAdhocProvisioningProfile {
     );
 
     // 4. Reuse or create the profile on Apple Developer Portal
+    const applePlatform = getApplePlatformFromTarget(target);
+    const profileType =
+      applePlatform === ApplePlatform.TV_OS
+        ? ProfileType.TVOS_APP_ADHOC
+        : ProfileType.IOS_APP_ADHOC;
     const provisioningProfileStoreInfo =
       await ctx.appStore.createOrReuseAdhocProvisioningProfileAsync(
         chosenDevices.map(({ identifier }) => identifier),
-        this.app.bundleIdentifier,
-        distCert.serialNumber
+        app.bundleIdentifier,
+        distCert.serialNumber,
+        profileType
       );
 
     // 5. Create or update the profile on servers
     const appleAppIdentifier = await ctx.ios.createOrGetExistingAppleAppIdentifierAsync(
-      this.app,
+      ctx.graphqlClient,
+      app,
       appleTeam
     );
-    let appleProvisioningProfile: AppleProvisioningProfileFragment | null = null;
+    let appleProvisioningProfile: AppleProvisioningProfileFragment | null;
     if (currentBuildCredentials?.provisioningProfile) {
-      if (
-        currentBuildCredentials.provisioningProfile.developerPortalIdentifier !==
-        provisioningProfileStoreInfo.provisioningProfileId
-      ) {
-        await ctx.ios.deleteProvisioningProfilesAsync([
-          currentBuildCredentials.provisioningProfile.id,
-        ]);
-        appleProvisioningProfile = await ctx.ios.createProvisioningProfileAsync(
-          this.app,
-          appleAppIdentifier,
-          {
-            appleProvisioningProfile: provisioningProfileStoreInfo.provisioningProfile,
-            developerPortalIdentifier: provisioningProfileStoreInfo.provisioningProfileId,
-          }
-        );
-      } else {
-        appleProvisioningProfile = currentBuildCredentials.provisioningProfile;
-      }
+      appleProvisioningProfile = await this.reuseCurrentProvisioningProfileAsync(
+        currentBuildCredentials.provisioningProfile,
+        provisioningProfileStoreInfo,
+        ctx,
+        app,
+        appleAppIdentifier
+      );
     } else {
       appleProvisioningProfile = await ctx.ios.createProvisioningProfileAsync(
-        this.app,
+        ctx.graphqlClient,
+        app,
         appleAppIdentifier,
         {
           appleProvisioningProfile: provisioningProfileStoreInfo.provisioningProfile,
@@ -152,11 +173,43 @@ export class SetUpAdhocProvisioningProfile {
       );
     }
 
-    // 6. Create (or update) app build credentials
+    // 6. Compare selected devices with the ones actually provisioned
+    const diffList = differenceBy(
+      chosenDevices,
+      appleProvisioningProfile.appleDevices,
+      'identifier'
+    );
+    if (diffList.length > 0) {
+      Log.warn(`Failed to provision ${diffList.length} of the selected devices:`);
+      for (const missingDevice of diffList) {
+        Log.warn(`- ${formatDeviceLabel(missingDevice)}`);
+      }
+      Log.log(
+        'Most commonly devices fail to to be provisioned while they are still being processed by Apple, which can take up to 24-72 hours. Check your Apple Developer Portal page at https://developer.apple.com/account/resources/devices/list, the devices in "Processing" status cannot be provisioned yet'
+      );
+      const shouldContinue = await selectAsync(
+        'Do you want to continue without provisioning these devices?',
+        [
+          {
+            title: 'Yes',
+            value: true,
+          },
+          {
+            title: 'No (EAS CLI will exit)',
+            value: false,
+          },
+        ]
+      );
+      if (!shouldContinue) {
+        Errors.exit(1);
+      }
+    }
+
+    // 7. Create (or update) app build credentials
     assert(appleProvisioningProfile);
     return await assignBuildCredentialsAsync(
       ctx,
-      this.app,
+      app,
       IosDistributionType.AdHoc,
       distCert,
       appleProvisioningProfile,
@@ -164,23 +217,62 @@ export class SetUpAdhocProvisioningProfile {
     );
   }
 
+  private async reuseCurrentProvisioningProfileAsync(
+    currentProvisioningProfile: AppleProvisioningProfileFragment,
+    provisioningProfileStoreInfo: ProvisioningProfile,
+    ctx: CredentialsContext,
+    app: AppLookupParams,
+    appleAppIdentifier: AppleAppIdentifierFragment
+  ): Promise<AppleProvisioningProfileFragment> {
+    if (
+      currentProvisioningProfile.developerPortalIdentifier !==
+      provisioningProfileStoreInfo.provisioningProfileId
+    ) {
+      // If IDs don't match, the profile needs to be deleted and re-created
+      await ctx.ios.deleteProvisioningProfilesAsync(ctx.graphqlClient, [
+        currentProvisioningProfile.id,
+      ]);
+      return await ctx.ios.createProvisioningProfileAsync(
+        ctx.graphqlClient,
+        app,
+        appleAppIdentifier,
+        {
+          appleProvisioningProfile: provisioningProfileStoreInfo.provisioningProfile,
+          developerPortalIdentifier: provisioningProfileStoreInfo.provisioningProfileId,
+        }
+      );
+    } else {
+      // If not, the profile needs to be updated first
+      return await ctx.ios.updateProvisioningProfileAsync(
+        ctx.graphqlClient,
+        currentProvisioningProfile.id,
+        {
+          appleProvisioningProfile: provisioningProfileStoreInfo.provisioningProfile,
+          developerPortalIdentifier: provisioningProfileStoreInfo.provisioningProfileId,
+        }
+      );
+    }
+  }
+
   private async areBuildCredentialsSetupAsync(ctx: CredentialsContext): Promise<boolean> {
-    const buildCredentials = await getBuildCredentialsAsync(
-      ctx,
-      this.app,
-      IosDistributionType.AdHoc
-    );
-    return await validateProvisioningProfileAsync(ctx, this.app, buildCredentials);
+    const { app, target } = this.options;
+    const buildCredentials = await getBuildCredentialsAsync(ctx, app, IosDistributionType.AdHoc);
+    return await validateProvisioningProfileAsync(ctx, target, app, buildCredentials);
   }
 
   private async shouldUseExistingProfileAsync(
     ctx: CredentialsContext,
     buildCredentials: IosAppBuildCredentialsFragment
   ): Promise<boolean> {
+    const { app } = this.options;
     const provisioningProfile = nullthrows(buildCredentials.provisioningProfile);
 
     const appleTeam = nullthrows(provisioningProfile.appleTeam);
-    const registeredAppleDevices = await ctx.ios.getDevicesForAppleTeamAsync(this.app, appleTeam);
+    const registeredAppleDevices = await ctx.ios.getDevicesForAppleTeamAsync(
+      ctx.graphqlClient,
+      app,
+      appleTeam
+    );
 
     const provisionedDevices = provisioningProfile.appleDevices;
 
@@ -254,18 +346,18 @@ export class SetUpAdhocProvisioningProfile {
     ctx: CredentialsContext,
     appleTeam: AppleTeamFragment
   ): Promise<AppleDeviceFragment[]> {
-    const action = new DeviceCreateAction(this.app.account, appleTeam);
+    const { app } = this.options;
+    const action = new DeviceCreateAction(ctx.graphqlClient, ctx.appStore, app.account, appleTeam);
     const method = await action.runAsync();
 
     while (true) {
-      if (method !== RegistrationMethod.INPUT) {
-        Log.newLine();
+      if (method === RegistrationMethod.WEBSITE) {
         Log.log(chalk.bold("Press any key if you've already finished device registration."));
         await pressAnyKeyToContinueAsync();
       }
       Log.newLine();
 
-      const devices = await ctx.ios.getDevicesForAppleTeamAsync(this.app, appleTeam, {
+      const devices = await ctx.ios.getDevicesForAppleTeamAsync(ctx.graphqlClient, app, appleTeam, {
         useCache: false,
       });
       if (devices.length === 0) {
