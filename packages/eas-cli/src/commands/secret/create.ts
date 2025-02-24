@@ -1,28 +1,33 @@
-import { getConfig } from '@expo/config';
 import { Flags } from '@oclif/core';
+import assert from 'assert';
 import chalk from 'chalk';
+import fs from 'fs-extra';
+import path from 'path';
 
 import EasCommand from '../../commandUtils/EasCommand';
+import { EASNonInteractiveFlag } from '../../commandUtils/flags';
 import { EnvironmentSecretMutation } from '../../graphql/mutations/EnvironmentSecretMutation';
 import {
   EnvironmentSecretScope,
   EnvironmentSecretsQuery,
 } from '../../graphql/queries/EnvironmentSecretsQuery';
+import {
+  SecretType,
+  SecretTypeToEnvironmentSecretType,
+} from '../../graphql/types/EnvironmentSecret';
 import Log from '../../log';
 import {
-  findProjectRootAsync,
-  getProjectAccountNameAsync,
-  getProjectIdAsync,
+  getDisplayNameForProjectIdAsync,
+  getOwnerAccountForProjectIdAsync,
 } from '../../project/projectUtils';
-import { promptAsync } from '../../prompts';
-import { findAccountByName } from '../../user/Account';
-import { getActorDisplayName } from '../../user/User';
-import { ensureLoggedInAsync } from '../../user/actions';
+import { promptAsync, selectAsync } from '../../prompts';
 
 export default class EnvironmentSecretCreate extends EasCommand {
-  static description = 'create an environment secret on the current project or owner account';
+  static override description =
+    'create an environment secret on the current project or owner account';
+  static override hidden = true;
 
-  static flags = {
+  static override flags = {
     scope: Flags.enum({
       description: 'Scope for the secret',
       options: [EnvironmentSecretScope.ACCOUNT, EnvironmentSecretScope.PROJECT],
@@ -32,29 +37,53 @@ export default class EnvironmentSecretCreate extends EasCommand {
       description: 'Name of the secret',
     }),
     value: Flags.string({
-      description: 'Value of the secret',
+      description: 'Text value or path to a file to store in the secret',
+    }),
+    type: Flags.enum({
+      description: 'The type of secret',
+      options: [SecretType.STRING, SecretType.FILE],
     }),
     force: Flags.boolean({
       description: 'Delete and recreate existing secrets',
       default: false,
     }),
+    ...EASNonInteractiveFlag,
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectId,
+    ...this.ContextOptions.LoggedIn,
   };
 
   async runAsync(): Promise<void> {
-    const actor = await ensureLoggedInAsync();
+    Log.warn('This command is deprecated. Use eas env:create instead.');
+    Log.newLine();
+
     let {
-      flags: { name, value: secretValue, scope, force },
+      flags: {
+        name,
+        value: secretValue,
+        scope,
+        force,
+        type: secretType,
+        'non-interactive': nonInteractive,
+      },
     } = await this.parse(EnvironmentSecretCreate);
+    const {
+      projectId,
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(EnvironmentSecretCreate, {
+      nonInteractive,
+    });
 
-    const projectDir = await findProjectRootAsync();
-    const { exp } = getConfig(projectDir, { skipSDKVersionRequirement: true });
-    const accountName = await getProjectAccountNameAsync(exp);
-
-    const { slug } = exp;
-    const projectId = await getProjectIdAsync(exp);
+    const projectDisplayName = await getDisplayNameForProjectIdAsync(graphqlClient, projectId);
+    const ownerAccount = await getOwnerAccountForProjectIdAsync(graphqlClient, projectId);
 
     if (!scope) {
       const validationMessage = 'Secret scope may not be empty.';
+      if (nonInteractive) {
+        throw new Error(validationMessage);
+      }
 
       ({ scope } = await promptAsync({
         type: 'select',
@@ -69,13 +98,18 @@ export default class EnvironmentSecretCreate extends EasCommand {
     }
 
     if (!name) {
+      const validationMessage = 'Secret name may not be empty.';
+      if (nonInteractive) {
+        throw new Error(validationMessage);
+      }
+
       ({ name } = await promptAsync({
         type: 'text',
         name: 'name',
         message: `Secret name:`,
         validate: value => {
           if (!value) {
-            return 'Secret name may not be empty.';
+            return validationMessage;
           }
 
           // this validation regex here is just to shorten the feedback loop
@@ -89,42 +123,85 @@ export default class EnvironmentSecretCreate extends EasCommand {
       }));
 
       if (!name) {
-        throw new Error('Secret name may not be empty.');
-      }
-    }
-
-    if (!secretValue) {
-      const validationMessage = 'Secret value may not be empty.';
-
-      ({ secretValue } = await promptAsync({
-        type: 'text',
-        name: 'secretValue',
-        message: 'Secret value:',
-        validate: value => (value ? true : validationMessage),
-      }));
-
-      if (!secretValue) {
         throw new Error(validationMessage);
       }
     }
 
+    if (!secretType) {
+      if (nonInteractive) {
+        throw new Error('Secret type may not be empty in non-interactive mode');
+      }
+
+      secretType = await selectAsync('Select secret type', [
+        {
+          title: 'string',
+          value: SecretType.STRING,
+        },
+        {
+          title: 'file',
+          value: SecretType.FILE,
+        },
+      ]);
+    }
+
+    if (!secretValue) {
+      const validationMessage = 'Secret value may not be empty.';
+      if (nonInteractive) {
+        throw new Error(validationMessage);
+      }
+
+      ({ secretValue } = await promptAsync({
+        type: 'text',
+        name: 'secretValue',
+        message: secretType === SecretType.STRING ? 'Secret value:' : 'Local file path:',
+        // eslint-disable-next-line async-protect/async-suffix
+        validate: async secretValue => {
+          if (!secretValue) {
+            return validationMessage;
+          }
+          if (secretType === SecretType.FILE) {
+            const secretFilePath = path.resolve(secretValue);
+            if (!(await fs.pathExists(secretFilePath))) {
+              return `File "${secretValue}" does not exist.`;
+            }
+          }
+          return true;
+        },
+      }));
+    }
+
+    assert(secretValue);
+
+    let secretFilePath: string | undefined;
+    if (secretType === SecretType.FILE) {
+      secretFilePath = path.resolve(secretValue);
+      if (!(await fs.pathExists(secretFilePath))) {
+        throw new Error(`File "${secretValue}" does not exist`);
+      }
+      secretValue = await fs.readFile(secretFilePath, 'base64');
+    }
+
     if (scope === EnvironmentSecretScope.PROJECT) {
       if (force) {
-        const existingSecrets = await EnvironmentSecretsQuery.byAppIdAsync(projectId);
+        const { appSecrets: existingSecrets } = await EnvironmentSecretsQuery.byAppIdAsync(
+          graphqlClient,
+          projectId
+        );
         const existingSecret = existingSecrets.find(secret => secret.name === name);
 
         if (existingSecret) {
-          await EnvironmentSecretMutation.deleteAsync(existingSecret.id);
+          await EnvironmentSecretMutation.deleteAsync(graphqlClient, existingSecret.id);
           Log.withTick(
             `Deleting existing secret ${chalk.bold(name)} on project ${chalk.bold(
-              `@${accountName}/${slug}`
+              projectDisplayName
             )}.`
           );
         }
       }
 
       const secret = await EnvironmentSecretMutation.createForAppAsync(
-        { name, value: secretValue },
+        graphqlClient,
+        { name, value: secretValue, type: SecretTypeToEnvironmentSecretType[secretType] },
         projectId
       );
       if (!secret) {
@@ -133,29 +210,29 @@ export default class EnvironmentSecretCreate extends EasCommand {
         );
       }
 
-      Log.withTick(
-        `️Created a new secret ${chalk.bold(name)} on project ${chalk.bold(
-          `@${accountName}/${slug}`
-        )}.`
-      );
-    } else if (scope === EnvironmentSecretScope.ACCOUNT) {
-      const ownerAccount = findAccountByName(actor.accounts, accountName);
-
-      if (!ownerAccount) {
-        Log.warn(
-          `Your account (${getActorDisplayName(actor)}) doesn't have access to the ${chalk.bold(
-            accountName
-          )} account`
+      if (secretType === SecretType.STRING) {
+        Log.withTick(
+          `Created a new secret ${chalk.bold(name)} with value ${chalk.bold(
+            secretValue
+          )} on project ${chalk.bold(projectDisplayName)}.`
         );
-        return;
+      } else {
+        Log.withTick(
+          `Created a new secret ${chalk.bold(name)} from file ${chalk.bold(
+            secretFilePath
+          )} on project ${chalk.bold(projectDisplayName)}.`
+        );
       }
-
+    } else if (scope === EnvironmentSecretScope.ACCOUNT) {
       if (force) {
-        const existingSecrets = await EnvironmentSecretsQuery.byAccountNameAsync(ownerAccount.name);
+        const { accountSecrets: existingSecrets } = await EnvironmentSecretsQuery.byAppIdAsync(
+          graphqlClient,
+          projectId
+        );
         const existingSecret = existingSecrets.find(secret => secret.name === name);
 
         if (existingSecret) {
-          await EnvironmentSecretMutation.deleteAsync(existingSecret.id);
+          await EnvironmentSecretMutation.deleteAsync(graphqlClient, existingSecret.id);
 
           Log.withTick(
             `Deleting existing secret ${chalk.bold(name)} on account ${chalk.bold(
@@ -166,7 +243,8 @@ export default class EnvironmentSecretCreate extends EasCommand {
       }
 
       const secret = await EnvironmentSecretMutation.createForAccountAsync(
-        { name, value: secretValue },
+        graphqlClient,
+        { name, value: secretValue, type: SecretTypeToEnvironmentSecretType[secretType] },
         ownerAccount.id
       );
 
@@ -176,9 +254,19 @@ export default class EnvironmentSecretCreate extends EasCommand {
         );
       }
 
-      Log.withTick(
-        `️Created a new secret ${chalk.bold(name)} on account ${chalk.bold(ownerAccount.name)}.`
-      );
+      if (secretType === SecretType.STRING) {
+        Log.withTick(
+          `Created a new secret ${chalk.bold(name)} with value ${chalk.bold(
+            secretValue
+          )} on account ${chalk.bold(ownerAccount.name)}.`
+        );
+      } else {
+        Log.withTick(
+          `Created a new secret ${chalk.bold(name)} from file ${chalk.bold(
+            secretFilePath
+          )} on account ${chalk.bold(ownerAccount.name)}.`
+        );
+      }
     }
   }
 }

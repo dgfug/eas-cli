@@ -1,9 +1,10 @@
-import { Flags } from '@oclif/core';
 import chalk from 'chalk';
 import gql from 'graphql-tag';
 
 import EasCommand from '../../commandUtils/EasCommand';
-import { graphqlClient, withErrorHandlingAsync } from '../../graphql/client';
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
+import { EasNonInteractiveAndJsonFlags } from '../../commandUtils/flags';
+import { withErrorHandlingAsync } from '../../graphql/client';
 import {
   DeleteUpdateGroupMutation,
   UpdateMutationDeleteUpdateGroupArgs,
@@ -12,11 +13,14 @@ import Log from '../../log';
 import { confirmAsync } from '../../prompts';
 import { enableJsonOutput, printJsonOnlyOutput } from '../../utils/json';
 
-async function deleteUpdateGroupAsync({
-  group,
-}: {
-  group: string;
-}): Promise<DeleteUpdateGroupMutation> {
+async function deleteUpdateGroupAsync(
+  graphqlClient: ExpoGraphqlClient,
+  {
+    group,
+  }: {
+    group: string;
+  }
+): Promise<DeleteUpdateGroupMutation> {
   return await withErrorHandlingAsync(
     graphqlClient
       .mutation<DeleteUpdateGroupMutation, UpdateMutationDeleteUpdateGroupArgs>(
@@ -36,9 +40,9 @@ async function deleteUpdateGroupAsync({
 }
 
 export default class UpdateDelete extends EasCommand {
-  static description = 'delete all the updates in an update group';
+  static override description = 'delete all the updates in an update group';
 
-  static args = [
+  static override args = [
     {
       name: 'groupId',
       required: true,
@@ -46,22 +50,29 @@ export default class UpdateDelete extends EasCommand {
     },
   ];
 
-  static flags = {
-    json: Flags.boolean({
-      description: `Return a json with the group ID of the deleted updates.`,
-      default: false,
-    }),
+  static override flags = {
+    ...EasNonInteractiveAndJsonFlags,
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.LoggedIn,
   };
 
   async runAsync(): Promise<void> {
     const {
       args: { groupId: group },
-      flags: { json: jsonFlag },
+      flags: { json: jsonFlag, 'non-interactive': nonInteractive },
     } = await this.parse(UpdateDelete);
+
+    const {
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(UpdateDelete, { nonInteractive });
 
     if (jsonFlag) {
       enableJsonOutput();
-    } else {
+    }
+
+    if (!nonInteractive) {
       const shouldAbort = await confirmAsync({
         message:
           `🚨${chalk.red('CAUTION')}🚨\n\n` +
@@ -69,7 +80,7 @@ export default class UpdateDelete extends EasCommand {
             'This is a permanent operation.'
           )}\n\n` +
           `If you want to revert to a previous publish, you should use 'update --republish' targeted at the last working update group instead.\n\n` +
-          `An update group should only be deleted in an emergency like an accidental publish of a secret. In this case user 'update --republish' to revert to the last working update group first and then proceed with the deletion. Deleting an update group when it is the latest publish can lead to inconsistent cacheing behavior by clients.\n\n` +
+          `An update group should only be deleted in an emergency like an accidental publish of a secret. In this case user 'update --republish' to revert to the last working update group first and then proceed with the deletion. Deleting an update group when it is the latest publish can lead to inconsistent caching behavior by clients.\n\n` +
           `Would you like to abort?`,
       });
 
@@ -79,7 +90,7 @@ export default class UpdateDelete extends EasCommand {
       }
     }
 
-    await deleteUpdateGroupAsync({ group });
+    await deleteUpdateGroupAsync(graphqlClient, { group });
 
     if (jsonFlag) {
       printJsonOnlyOutput({ group });

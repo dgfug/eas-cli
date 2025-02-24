@@ -1,9 +1,9 @@
 import chalk from 'chalk';
 
-import { ApplePushKeyFragment } from '../../../graphql/generated';
+import { formatAppleTeam } from './AppleTeamFormatting';
+import { AccountFragment, ApplePushKeyFragment } from '../../../graphql/generated';
 import Log, { learnMore } from '../../../log';
 import { confirmAsync, promptAsync } from '../../../prompts';
-import { Account } from '../../../user/Account';
 import { fromNow } from '../../../utils/date';
 import { CredentialsContext } from '../../context';
 import { askForUserProvidedAsync } from '../../utils/promptForCredentials';
@@ -12,7 +12,6 @@ import { filterRevokedAndUntrackedPushKeysFromEasServersAsync } from '../appstor
 import { APPLE_KEYS_TOO_MANY_GENERATED_ERROR } from '../appstore/pushKey';
 import { pushKeySchema } from '../credentials';
 import { isPushKeyValidAndTrackedAsync } from '../validators/validatePushKey';
-import { formatAppleTeam } from './AppleTeamUtils';
 
 export async function provideOrGeneratePushKeyAsync(ctx: CredentialsContext): Promise<PushKey> {
   if (!ctx.nonInteractive) {
@@ -114,19 +113,19 @@ function formatPushKeyFromApple(pushKey: PushKeyStoreInfo): string {
  * */
 export async function selectPushKeyAsync(
   ctx: CredentialsContext,
-  account: Account
+  account: AccountFragment
 ): Promise<ApplePushKeyFragment | null> {
-  const pushKeysForAccount = await ctx.ios.getPushKeysForAccountAsync(account);
+  const pushKeysForAccount = await ctx.ios.getPushKeysForAccountAsync(ctx.graphqlClient, account);
   if (pushKeysForAccount.length === 0) {
     Log.warn(`There are no Push Keys available in your EAS account.`);
     return null;
   }
   if (!ctx.appStore.authCtx) {
-    return selectPushKeysAsync(pushKeysForAccount);
+    return await selectPushKeysAsync(pushKeysForAccount);
   }
 
   const validPushKeys = await getValidAndTrackedPushKeysOnEasServersAsync(ctx, pushKeysForAccount);
-  return selectPushKeysAsync(pushKeysForAccount, validPushKeys);
+  return await selectPushKeysAsync(pushKeysForAccount, validPushKeys);
 }
 
 export async function getValidAndTrackedPushKeysOnEasServersAsync(
@@ -186,8 +185,13 @@ export function formatPushKey(
 
   const apps = pushKey.iosAppCredentialsList.map(appCredentials => appCredentials.app);
   if (apps.length) {
-    const appFullNames = apps.map(app => app.fullName).join(',');
-    line += chalk.gray(`\n    📲 Used by: ${appFullNames}`);
+    // iosAppCredentialsList is capped at 20 on www
+    const appFullNames = apps
+      .map(app => app.fullName)
+      .slice(0, 19)
+      .join(',');
+    const andMaybeMore = apps.length > 19 ? ' (and more)' : '';
+    line += chalk.gray(`\n    📲 Used by: ${appFullNames}${andMaybeMore}`);
   }
 
   if (validPushKeyIdentifiers?.includes(keyIdentifier)) {

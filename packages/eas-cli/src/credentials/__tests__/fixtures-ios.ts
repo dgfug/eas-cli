@@ -1,5 +1,6 @@
 import { UserRole } from '@expo/apple-utils';
 
+import { testProvisioningProfileBase64 } from './fixtures-base64-data';
 import {
   AppFragment,
   AppStoreConnectApiKeyFragment,
@@ -12,6 +13,7 @@ import {
   CommonIosAppCredentialsFragment,
   IosAppBuildCredentialsFragment,
   IosDistributionType,
+  Role,
 } from '../../graphql/generated';
 import * as IosGraphqlClient from '../ios/api/GraphqlClient';
 import {
@@ -20,7 +22,6 @@ import {
   ProvisioningProfile,
 } from '../ios/appstore/Credentials.types';
 import { Target } from '../ios/types';
-import { testProvisioningProfileBase64 } from './fixtures-base64-data';
 
 const now = new Date();
 
@@ -54,7 +55,20 @@ export const testAppleAppIdentifierFragment: AppleAppIdentifierFragment = {
 export const testAppFragment: AppFragment = {
   id: 'test-app-id',
   fullName: '@testuser/testapp',
+  name: 'testapp',
   slug: 'testapp',
+  ownerAccount: {
+    id: 'test-account-id',
+    name: 'testuser',
+    users: [
+      {
+        role: Role.Owner,
+        actor: {
+          id: 'test-user-id',
+        },
+      },
+    ],
+  },
 };
 
 export const testAscApiKeyFragment: AppStoreConnectApiKeyFragment = {
@@ -76,7 +90,13 @@ export const testPushKey: ApplePushKeyFragment = {
   iosAppCredentialsList: [],
 };
 
-export const testTargets: Target[] = [{ targetName: 'testapp', bundleIdentifier: 'foo.bar.com' }];
+export const testTarget = {
+  targetName: 'testapp',
+  bundleIdentifier: 'foo.bar.com',
+  entitlements: {},
+};
+
+export const testTargets: Target[] = [testTarget];
 
 export const testProvisioningProfileFragment: AppleProvisioningProfileFragment = {
   id: 'test-prov-prof-id-1',

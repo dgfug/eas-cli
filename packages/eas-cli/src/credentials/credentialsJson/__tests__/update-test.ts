@@ -2,12 +2,13 @@ import fs from 'fs-extra';
 import { vol } from 'memfs';
 import prompts from 'prompts';
 
-import { asMock } from '../../../__tests__/utils';
 import { IosDistributionType } from '../../../graphql/generated';
+import { AppQuery } from '../../../graphql/queries/AppQuery';
 import {
   testKeystore,
   testLegacyAndroidBuildCredentialsFragment,
 } from '../../__tests__/fixtures-android';
+import { testAppQueryByIdResponse } from '../../__tests__/fixtures-constants';
 import { createCtxMock } from '../../__tests__/fixtures-context';
 import {
   getNewIosApiMock,
@@ -15,20 +16,22 @@ import {
   testDistCertFragmentNoDependencies,
   testProvisioningProfileFragment,
 } from '../../__tests__/fixtures-ios';
-import { getAppFromContext } from '../../ios/actions/BuildCredentialsUtils';
+import { getAppFromContextAsync } from '../../ios/actions/BuildCredentialsUtils';
 import { Target } from '../../ios/types';
 import { updateAndroidCredentialsAsync, updateIosCredentialsAsync } from '../update';
 
 jest.mock('fs');
 jest.mock('prompts');
+jest.mock('../../../graphql/queries/AppQuery');
 
 describe('update credentials.json', () => {
   beforeEach(() => {
     vol.reset();
-    asMock(prompts).mockReset();
-    asMock(prompts).mockImplementation(() => {
+    jest.mocked(prompts).mockReset();
+    jest.mocked(prompts).mockImplementation(() => {
       throw new Error(`unhandled prompts call - this shouldn't happen - fix tests!`);
     });
+    jest.mocked(AppQuery.byIdAsync).mockResolvedValue(testAppQueryByIdResponse);
   });
 
   describe(updateAndroidCredentialsAsync, () => {
@@ -176,6 +179,7 @@ describe('update credentials.json', () => {
       {
         targetName: 'testapp',
         bundleIdentifier: 'com.bundle.id',
+        entitlements: {},
       },
     ];
 
@@ -201,7 +205,7 @@ describe('update credentials.json', () => {
         './pprofile': 'somebinarycontent',
         './cert.p12': 'somebinarycontent2',
       });
-      const app = getAppFromContext(ctx);
+      const app = await getAppFromContextAsync(ctx);
 
       await updateIosCredentialsAsync(ctx, app, targets, IosDistributionType.AppStore);
       const certP12 = await fs.readFile('./cert.p12', 'base64');
@@ -234,7 +238,7 @@ describe('update credentials.json', () => {
           ),
         },
       });
-      const app = getAppFromContext(ctx);
+      const app = await getAppFromContextAsync(ctx);
 
       await updateIosCredentialsAsync(ctx, app, targets, IosDistributionType.AppStore);
 
@@ -274,7 +278,7 @@ describe('update credentials.json', () => {
         './pprofile': 'somebinarycontent',
         './cert.p12': 'somebinarycontent2',
       });
-      const app = getAppFromContext(ctx);
+      const app = await getAppFromContextAsync(ctx);
       try {
         await updateIosCredentialsAsync(ctx, app, targets, IosDistributionType.AppStore);
         throw new Error('updateIosCredentialsAsync should throw na error');

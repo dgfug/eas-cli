@@ -1,10 +1,10 @@
 import merge from 'ts-deepmerge';
 
-import { CredentialsContext } from '../context';
 import { getNewAndroidApiMock } from './fixtures-android';
 import { getAppstoreMock } from './fixtures-appstore';
 import { testAppJson, testUsername } from './fixtures-constants';
 import { getNewIosApiMock } from './fixtures-ios';
+import { CredentialsContext } from '../context';
 
 export function createCtxMock(mockOverride: Record<string, any> = {}): CredentialsContext {
   const defaultMock = {
@@ -21,8 +21,9 @@ export function createCtxMock(mockOverride: Record<string, any> = {}): Credentia
     },
     hasAppleCtx: jest.fn(() => true),
     hasProjectContext: true,
-    exp: testAppJson,
+    getExpoConfigAsync: async () => testAppJson,
     projectDir: '.',
+    getProjectIdAsync: async () => 'test-project-id',
   };
   return merge(defaultMock, mockOverride) as any;
 }

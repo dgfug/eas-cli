@@ -1,24 +1,6 @@
 import { UserRole } from '@expo/apple-utils';
 import nullthrows from 'nullthrows';
 
-import {
-  AppFragment,
-  AppStoreConnectApiKeyFragment,
-  AppStoreConnectUserRole,
-  AppleAppIdentifierFragment,
-  AppleDeviceFragment,
-  AppleDistributionCertificateFragment,
-  ApplePushKeyFragment,
-  AppleTeamFragment,
-  CommonIosAppCredentialsFragment,
-  IosAppBuildCredentialsFragment,
-  IosDistributionType,
-} from '../../../graphql/generated';
-import { isWildcardBundleIdentifier } from '../../../project/ios/bundleIdentifier';
-import { Account } from '../../../user/Account';
-import { DistributionCertificate, PushKey } from '../appstore/Credentials.types';
-import { MinimalAscApiKey } from '../credentials';
-import { AppleTeamMissingError } from '../errors';
 import { AppStoreConnectApiKeyMutation } from './graphql/mutations/AppStoreConnectApiKeyMutation';
 import { AppleAppIdentifierMutation } from './graphql/mutations/AppleAppIdentifierMutation';
 import {
@@ -33,7 +15,6 @@ import { ApplePushKeyMutation } from './graphql/mutations/ApplePushKeyMutation';
 import { AppleTeamMutation } from './graphql/mutations/AppleTeamMutation';
 import { IosAppBuildCredentialsMutation } from './graphql/mutations/IosAppBuildCredentialsMutation';
 import { IosAppCredentialsMutation } from './graphql/mutations/IosAppCredentialsMutation';
-import { AppQuery } from './graphql/queries/AppQuery';
 import { AppStoreConnectApiKeyQuery } from './graphql/queries/AppStoreConnectApiKeyQuery';
 import { AppleAppIdentifierQuery } from './graphql/queries/AppleAppIdentifierQuery';
 import { AppleDeviceQuery } from './graphql/queries/AppleDeviceQuery';
@@ -45,20 +26,38 @@ import {
 import { ApplePushKeyQuery } from './graphql/queries/ApplePushKeyQuery';
 import { AppleTeamQuery } from './graphql/queries/AppleTeamQuery';
 import { IosAppCredentialsQuery } from './graphql/queries/IosAppCredentialsQuery';
+import { AppLookupParams } from './graphql/types/AppLookupParams';
+import { ExpoGraphqlClient } from '../../../commandUtils/context/contextUtils/createGraphqlClient';
+import {
+  AccountFragment,
+  AppFragment,
+  AppStoreConnectApiKeyFragment,
+  AppStoreConnectUserRole,
+  AppleAppIdentifierFragment,
+  AppleDeviceFragment,
+  AppleDistributionCertificateFragment,
+  ApplePushKeyFragment,
+  AppleTeamFragment,
+  CommonIosAppCredentialsFragment,
+  IosAppBuildCredentialsFragment,
+  IosDistributionType,
+} from '../../../graphql/generated';
+import { AppQuery } from '../../../graphql/queries/AppQuery';
+import { isWildcardBundleIdentifier } from '../../../project/ios/bundleIdentifier';
+import { DistributionCertificate, PushKey } from '../appstore/Credentials.types';
+import { MinimalAscApiKey } from '../credentials';
+import { AppleTeamMissingError } from '../errors';
 
-export interface AppLookupParams {
-  account: Account;
-  projectName: string;
-  bundleIdentifier: string;
-  parentBundleIdentifier?: string;
-}
-
-async function getAppAsync(appLookupParams: AppLookupParams): Promise<AppFragment> {
+async function getAppAsync(
+  graphqlClient: ExpoGraphqlClient,
+  appLookupParams: AppLookupParams
+): Promise<AppFragment> {
   const projectFullName = formatProjectFullName(appLookupParams);
-  return await AppQuery.byFullNameAsync(projectFullName);
+  return await AppQuery.byFullNameAsync(graphqlClient, projectFullName);
 }
 
 export async function createOrUpdateIosAppBuildCredentialsAsync(
+  graphqlClient: ExpoGraphqlClient,
   appLookupParams: AppLookupParams,
   {
     appleTeam,
@@ -75,6 +74,7 @@ export async function createOrUpdateIosAppBuildCredentialsAsync(
   }
 ): Promise<IosAppBuildCredentialsFragment> {
   const iosAppCredentials = await createOrGetExistingIosAppCredentialsWithBuildCredentialsAsync(
+    graphqlClient,
     appLookupParams,
     {
       appleTeam,
@@ -85,6 +85,7 @@ export async function createOrUpdateIosAppBuildCredentialsAsync(
   const iosAppBuildCredentials = iosAppCredentials.iosAppBuildCredentialsList?.[0];
   if (!iosAppBuildCredentials) {
     return await IosAppBuildCredentialsMutation.createIosAppBuildCredentialsAsync(
+      graphqlClient,
       {
         iosDistributionType,
         distributionCertificateId: appleDistributionCertificateId,
@@ -94,10 +95,12 @@ export async function createOrUpdateIosAppBuildCredentialsAsync(
     );
   } else {
     await IosAppBuildCredentialsMutation.setDistributionCertificateAsync(
+      graphqlClient,
       iosAppBuildCredentials.id,
       appleDistributionCertificateId
     );
     return await IosAppBuildCredentialsMutation.setProvisioningProfileAsync(
+      graphqlClient,
       iosAppBuildCredentials.id,
       appleProvisioningProfileId
     );
@@ -105,11 +108,13 @@ export async function createOrUpdateIosAppBuildCredentialsAsync(
 }
 
 export async function getIosAppCredentialsWithBuildCredentialsAsync(
+  graphqlClient: ExpoGraphqlClient,
   appLookupParams: AppLookupParams,
   { iosDistributionType }: { iosDistributionType?: IosDistributionType }
 ): Promise<CommonIosAppCredentialsFragment | null> {
   const { account, bundleIdentifier } = appLookupParams;
   const appleAppIdentifier = await AppleAppIdentifierQuery.byBundleIdentifierAsync(
+    graphqlClient,
     account.name,
     bundleIdentifier
   );
@@ -117,17 +122,23 @@ export async function getIosAppCredentialsWithBuildCredentialsAsync(
     return null;
   }
   const projectFullName = formatProjectFullName(appLookupParams);
-  return await IosAppCredentialsQuery.withBuildCredentialsByAppIdentifierIdAsync(projectFullName, {
-    appleAppIdentifierId: appleAppIdentifier.id,
-    iosDistributionType,
-  });
+  return await IosAppCredentialsQuery.withBuildCredentialsByAppIdentifierIdAsync(
+    graphqlClient,
+    projectFullName,
+    {
+      appleAppIdentifierId: appleAppIdentifier.id,
+      iosDistributionType,
+    }
+  );
 }
 
 export async function getIosAppCredentialsWithCommonFieldsAsync(
+  graphqlClient: ExpoGraphqlClient,
   appLookupParams: AppLookupParams
 ): Promise<CommonIosAppCredentialsFragment | null> {
   const { account, bundleIdentifier } = appLookupParams;
   const appleAppIdentifier = await AppleAppIdentifierQuery.byBundleIdentifierAsync(
+    graphqlClient,
     account.name,
     bundleIdentifier
   );
@@ -135,12 +146,17 @@ export async function getIosAppCredentialsWithCommonFieldsAsync(
     return null;
   }
   const projectFullName = formatProjectFullName(appLookupParams);
-  return await IosAppCredentialsQuery.withCommonFieldsByAppIdentifierIdAsync(projectFullName, {
-    appleAppIdentifierId: appleAppIdentifier.id,
-  });
+  return await IosAppCredentialsQuery.withCommonFieldsByAppIdentifierIdAsync(
+    graphqlClient,
+    projectFullName,
+    {
+      appleAppIdentifierId: appleAppIdentifier.id,
+    }
+  );
 }
 
 export async function createOrGetIosAppCredentialsWithCommonFieldsAsync(
+  graphqlClient: ExpoGraphqlClient,
   appLookupParams: AppLookupParams,
   {
     appleTeam,
@@ -148,15 +164,19 @@ export async function createOrGetIosAppCredentialsWithCommonFieldsAsync(
     appleTeam?: AppleTeamFragment;
   }
 ): Promise<CommonIosAppCredentialsFragment> {
-  const maybeIosAppCredentials = await getIosAppCredentialsWithCommonFieldsAsync(appLookupParams);
+  const maybeIosAppCredentials = await getIosAppCredentialsWithCommonFieldsAsync(
+    graphqlClient,
+    appLookupParams
+  );
   if (maybeIosAppCredentials) {
     return maybeIosAppCredentials;
   }
   const [app, appleAppIdentifier] = await Promise.all([
-    getAppAsync(appLookupParams),
-    createOrGetExistingAppleAppIdentifierAsync(appLookupParams, appleTeam ?? null),
+    getAppAsync(graphqlClient, appLookupParams),
+    createOrGetExistingAppleAppIdentifierAsync(graphqlClient, appLookupParams, appleTeam ?? null),
   ]);
   return await IosAppCredentialsMutation.createIosAppCredentialsAsync(
+    graphqlClient,
     { appleTeamId: appleTeam?.id },
     app.id,
     appleAppIdentifier.id
@@ -164,6 +184,7 @@ export async function createOrGetIosAppCredentialsWithCommonFieldsAsync(
 }
 
 export async function updateIosAppCredentialsAsync(
+  graphqlClient: ExpoGraphqlClient,
   appCredentials: CommonIosAppCredentialsFragment,
   {
     applePushKeyId,
@@ -176,6 +197,7 @@ export async function updateIosAppCredentialsAsync(
   let updatedAppCredentials = appCredentials;
   if (applePushKeyId) {
     updatedAppCredentials = await IosAppCredentialsMutation.setPushKeyAsync(
+      graphqlClient,
       updatedAppCredentials.id,
       applePushKeyId
     );
@@ -183,6 +205,7 @@ export async function updateIosAppCredentialsAsync(
   if (ascApiKeyIdForSubmissions) {
     updatedAppCredentials =
       await IosAppCredentialsMutation.setAppStoreConnectApiKeyForSubmissionsAsync(
+        graphqlClient,
         updatedAppCredentials.id,
         ascApiKeyIdForSubmissions
       );
@@ -191,6 +214,7 @@ export async function updateIosAppCredentialsAsync(
 }
 
 async function createOrGetExistingIosAppCredentialsWithBuildCredentialsAsync(
+  graphqlClient: ExpoGraphqlClient,
   appLookupParams: AppLookupParams,
   {
     appleTeam,
@@ -203,6 +227,7 @@ async function createOrGetExistingIosAppCredentialsWithBuildCredentialsAsync(
   }
 ): Promise<CommonIosAppCredentialsFragment> {
   const maybeIosAppCredentials = await getIosAppCredentialsWithBuildCredentialsAsync(
+    graphqlClient,
     appLookupParams,
     {
       iosDistributionType,
@@ -212,29 +237,36 @@ async function createOrGetExistingIosAppCredentialsWithBuildCredentialsAsync(
     return maybeIosAppCredentials;
   } else {
     const [app, appleAppIdentifier] = await Promise.all([
-      getAppAsync(appLookupParams),
-      createOrGetExistingAppleAppIdentifierAsync(appLookupParams, appleTeam ?? null),
+      getAppAsync(graphqlClient, appLookupParams),
+      createOrGetExistingAppleAppIdentifierAsync(graphqlClient, appLookupParams, appleTeam ?? null),
     ]);
     await IosAppCredentialsMutation.createIosAppCredentialsAsync(
+      graphqlClient,
       { appleTeamId: appleTeam?.id },
       app.id,
       appleAppIdentifier.id
     );
     const projectFullName = formatProjectFullName(appLookupParams);
     return nullthrows(
-      await IosAppCredentialsQuery.withBuildCredentialsByAppIdentifierIdAsync(projectFullName, {
-        appleAppIdentifierId,
-        iosDistributionType,
-      })
+      await IosAppCredentialsQuery.withBuildCredentialsByAppIdentifierIdAsync(
+        graphqlClient,
+        projectFullName,
+        {
+          appleAppIdentifierId,
+          iosDistributionType,
+        }
+      )
     );
   }
 }
 
 export async function createOrGetExistingAppleTeamAsync(
-  account: Account,
+  graphqlClient: ExpoGraphqlClient,
+  account: AccountFragment,
   { appleTeamIdentifier, appleTeamName }: { appleTeamIdentifier: string; appleTeamName?: string }
 ): Promise<AppleTeamFragment> {
   const appleTeam = await AppleTeamQuery.getByAppleTeamIdentifierAsync(
+    graphqlClient,
     account.id,
     appleTeamIdentifier
   );
@@ -242,6 +274,7 @@ export async function createOrGetExistingAppleTeamAsync(
     return appleTeam;
   } else {
     return await AppleTeamMutation.createAppleTeamAsync(
+      graphqlClient,
       { appleTeamIdentifier, appleTeamName },
       account.id
     );
@@ -249,10 +282,12 @@ export async function createOrGetExistingAppleTeamAsync(
 }
 
 export async function createOrGetExistingAppleAppIdentifierAsync(
+  graphqlClient: ExpoGraphqlClient,
   { account, projectName, bundleIdentifier, parentBundleIdentifier }: AppLookupParams,
   appleTeam: AppleTeamFragment | null
 ): Promise<AppleAppIdentifierFragment> {
   const appleAppIdentifier = await AppleAppIdentifierQuery.byBundleIdentifierAsync(
+    graphqlClient,
     account.name,
     bundleIdentifier
   );
@@ -266,11 +301,13 @@ export async function createOrGetExistingAppleAppIdentifierAsync(
     }
     const parentAppleAppIdentifier = parentBundleIdentifier
       ? await createOrGetExistingAppleAppIdentifierAsync(
+          graphqlClient,
           { account, projectName, bundleIdentifier: parentBundleIdentifier },
           appleTeam
         )
       : null;
     return await AppleAppIdentifierMutation.createAppleAppIdentifierAsync(
+      graphqlClient,
       {
         bundleIdentifier,
         appleTeamId: appleTeam?.id,
@@ -282,16 +319,23 @@ export async function createOrGetExistingAppleAppIdentifierAsync(
 }
 
 export async function getDevicesForAppleTeamAsync(
+  graphqlClient: ExpoGraphqlClient,
   { account }: AppLookupParams,
   { appleTeamIdentifier }: AppleTeamFragment,
   { useCache = true }: { useCache?: boolean } = {}
 ): Promise<AppleDeviceFragment[]> {
-  return await AppleDeviceQuery.getAllByAppleTeamIdentifierAsync(account.id, appleTeamIdentifier, {
-    useCache,
-  });
+  return await AppleDeviceQuery.getAllByAppleTeamIdentifierAsync(
+    graphqlClient,
+    account.name,
+    appleTeamIdentifier,
+    {
+      useCache,
+    }
+  );
 }
 
 export async function createProvisioningProfileAsync(
+  graphqlClient: ExpoGraphqlClient,
   { account }: AppLookupParams,
   appleAppIdentifier: AppleAppIdentifierFragment,
   appleProvisioningProfileInput: {
@@ -300,6 +344,7 @@ export async function createProvisioningProfileAsync(
   }
 ): Promise<AppleProvisioningProfileMutationResult> {
   return await AppleProvisioningProfileMutation.createAppleProvisioningProfileAsync(
+    graphqlClient,
     appleProvisioningProfileInput,
     account.id,
     appleAppIdentifier.id
@@ -307,22 +352,25 @@ export async function createProvisioningProfileAsync(
 }
 
 export async function getProvisioningProfileAsync(
+  graphqlClient: ExpoGraphqlClient,
   appLookupParams: AppLookupParams,
   iosDistributionType: IosDistributionType,
   { appleTeam }: { appleTeam: AppleTeamFragment | null } = { appleTeam: null }
 ): Promise<AppleProvisioningProfileQueryResult | null> {
   const projectFullName = formatProjectFullName(appLookupParams);
   const appleAppIdentifier = await createOrGetExistingAppleAppIdentifierAsync(
+    graphqlClient,
     appLookupParams,
     appleTeam
   );
-  return await AppleProvisioningProfileQuery.getForAppAsync(projectFullName, {
+  return await AppleProvisioningProfileQuery.getForAppAsync(graphqlClient, projectFullName, {
     appleAppIdentifierId: appleAppIdentifier.id,
     iosDistributionType,
   });
 }
 
 export async function updateProvisioningProfileAsync(
+  graphqlClient: ExpoGraphqlClient,
   appleProvisioningProfileId: string,
   appleProvisioningProfileInput: {
     appleProvisioningProfile: string;
@@ -330,50 +378,58 @@ export async function updateProvisioningProfileAsync(
   }
 ): Promise<AppleProvisioningProfileMutationResult> {
   return await AppleProvisioningProfileMutation.updateAppleProvisioningProfileAsync(
+    graphqlClient,
     appleProvisioningProfileId,
     appleProvisioningProfileInput
   );
 }
 
 export async function deleteProvisioningProfilesAsync(
+  graphqlClient: ExpoGraphqlClient,
   appleProvisioningProfileIds: string[]
 ): Promise<void> {
-  return await AppleProvisioningProfileMutation.deleteAppleProvisioningProfilesAsync(
+  await AppleProvisioningProfileMutation.deleteAppleProvisioningProfilesAsync(
+    graphqlClient,
     appleProvisioningProfileIds
   );
 }
 
 export async function getDistributionCertificateForAppAsync(
+  graphqlClient: ExpoGraphqlClient,
   appLookupParams: AppLookupParams,
   iosDistributionType: IosDistributionType,
   { appleTeam }: { appleTeam: AppleTeamFragment | null } = { appleTeam: null }
 ): Promise<AppleDistributionCertificateFragment | null> {
   const projectFullName = formatProjectFullName(appLookupParams);
   const appleAppIdentifier = await createOrGetExistingAppleAppIdentifierAsync(
+    graphqlClient,
     appLookupParams,
     appleTeam
   );
-  return await AppleDistributionCertificateQuery.getForAppAsync(projectFullName, {
+  return await AppleDistributionCertificateQuery.getForAppAsync(graphqlClient, projectFullName, {
     appleAppIdentifierId: appleAppIdentifier.id,
     iosDistributionType,
   });
 }
 
 export async function getDistributionCertificatesForAccountAsync(
-  account: Account
+  graphqlClient: ExpoGraphqlClient,
+  account: AccountFragment
 ): Promise<AppleDistributionCertificateFragment[]> {
-  return await AppleDistributionCertificateQuery.getAllForAccountAsync(account.name);
+  return await AppleDistributionCertificateQuery.getAllForAccountAsync(graphqlClient, account.name);
 }
 
 export async function createDistributionCertificateAsync(
-  account: Account,
+  graphqlClient: ExpoGraphqlClient,
+  account: AccountFragment,
   distCert: DistributionCertificate
 ): Promise<AppleDistributionCertificateMutationResult> {
-  const appleTeam = await createOrGetExistingAppleTeamAsync(account, {
+  const appleTeam = await createOrGetExistingAppleTeamAsync(graphqlClient, account, {
     appleTeamIdentifier: distCert.teamId,
     appleTeamName: distCert.teamName,
   });
   return await AppleDistributionCertificateMutation.createAppleDistributionCertificateAsync(
+    graphqlClient,
     {
       certP12: distCert.certP12,
       certPassword: distCert.certPassword,
@@ -386,22 +442,26 @@ export async function createDistributionCertificateAsync(
 }
 
 export async function deleteDistributionCertificateAsync(
+  graphqlClient: ExpoGraphqlClient,
   distributionCertificateId: string
 ): Promise<void> {
-  return await AppleDistributionCertificateMutation.deleteAppleDistributionCertificateAsync(
+  await AppleDistributionCertificateMutation.deleteAppleDistributionCertificateAsync(
+    graphqlClient,
     distributionCertificateId
   );
 }
 
 export async function createPushKeyAsync(
-  account: Account,
+  graphqlClient: ExpoGraphqlClient,
+  account: AccountFragment,
   pushKey: PushKey
 ): Promise<ApplePushKeyFragment> {
-  const appleTeam = await createOrGetExistingAppleTeamAsync(account, {
+  const appleTeam = await createOrGetExistingAppleTeamAsync(graphqlClient, account, {
     appleTeamIdentifier: pushKey.teamId,
     appleTeamName: pushKey.teamName,
   });
   return await ApplePushKeyMutation.createApplePushKeyAsync(
+    graphqlClient,
     {
       keyP8: pushKey.apnsKeyP8,
       keyIdentifier: pushKey.apnsKeyId,
@@ -412,33 +472,43 @@ export async function createPushKeyAsync(
 }
 
 export async function getPushKeysForAccountAsync(
-  account: Account
+  graphqlClient: ExpoGraphqlClient,
+  account: AccountFragment
 ): Promise<ApplePushKeyFragment[]> {
-  return await ApplePushKeyQuery.getAllForAccountAsync(account.name);
+  return await ApplePushKeyQuery.getAllForAccountAsync(graphqlClient, account.name);
 }
 
 export async function getPushKeyForAppAsync(
+  graphqlClient: ExpoGraphqlClient,
   appLookupParams: AppLookupParams
 ): Promise<ApplePushKeyFragment | null> {
-  const maybeIosAppCredentials = await getIosAppCredentialsWithCommonFieldsAsync(appLookupParams);
+  const maybeIosAppCredentials = await getIosAppCredentialsWithCommonFieldsAsync(
+    graphqlClient,
+    appLookupParams
+  );
   return maybeIosAppCredentials?.pushKey ?? null;
 }
 
-export async function deletePushKeyAsync(pushKeyId: string): Promise<void> {
-  return await ApplePushKeyMutation.deleteApplePushKeyAsync(pushKeyId);
+export async function deletePushKeyAsync(
+  graphqlClient: ExpoGraphqlClient,
+  pushKeyId: string
+): Promise<void> {
+  await ApplePushKeyMutation.deleteApplePushKeyAsync(graphqlClient, pushKeyId);
 }
 
 export async function createAscApiKeyAsync(
-  account: Account,
+  graphqlClient: ExpoGraphqlClient,
+  account: AccountFragment,
   ascApiKey: MinimalAscApiKey
 ): Promise<AppStoreConnectApiKeyFragment> {
   const maybeAppleTeam = ascApiKey.teamId
-    ? await createOrGetExistingAppleTeamAsync(account, {
+    ? await createOrGetExistingAppleTeamAsync(graphqlClient, account, {
         appleTeamIdentifier: ascApiKey.teamId,
         appleTeamName: ascApiKey.teamName,
       })
     : null;
   return await AppStoreConnectApiKeyMutation.createAppStoreConnectApiKeyAsync(
+    graphqlClient,
     {
       issuerIdentifier: ascApiKey.issuerId,
       keyIdentifier: ascApiKey.keyId,
@@ -452,20 +522,28 @@ export async function createAscApiKeyAsync(
 }
 
 export async function getAscApiKeysForAccountAsync(
-  account: Account
+  graphqlClient: ExpoGraphqlClient,
+  account: AccountFragment
 ): Promise<AppStoreConnectApiKeyFragment[]> {
-  return await AppStoreConnectApiKeyQuery.getAllForAccountAsync(account.name);
+  return await AppStoreConnectApiKeyQuery.getAllForAccountAsync(graphqlClient, account.name);
 }
 
 export async function getAscApiKeyForAppSubmissionsAsync(
+  graphqlClient: ExpoGraphqlClient,
   appLookupParams: AppLookupParams
 ): Promise<AppStoreConnectApiKeyFragment | null> {
-  const maybeIosAppCredentials = await getIosAppCredentialsWithCommonFieldsAsync(appLookupParams);
+  const maybeIosAppCredentials = await getIosAppCredentialsWithCommonFieldsAsync(
+    graphqlClient,
+    appLookupParams
+  );
   return maybeIosAppCredentials?.appStoreConnectApiKeyForSubmissions ?? null;
 }
 
-export async function deleteAscApiKeyAsync(ascApiKeyId: string): Promise<void> {
-  return await AppStoreConnectApiKeyMutation.deleteAppStoreConnectApiKeyAsync(ascApiKeyId);
+export async function deleteAscApiKeyAsync(
+  graphqlClient: ExpoGraphqlClient,
+  ascApiKeyId: string
+): Promise<void> {
+  await AppStoreConnectApiKeyMutation.deleteAppStoreConnectApiKeyAsync(graphqlClient, ascApiKeyId);
 }
 
 function convertUserRoleToGraphqlType(userRole: UserRole): AppStoreConnectUserRole {

@@ -1,11 +1,10 @@
-import { ApplePushKeyFragment } from '../../../graphql/generated';
-import Log from '../../../log';
-import { Account } from '../../../user/Account';
-import { CredentialsContext } from '../../context';
 import { provideOrGeneratePushKeyAsync } from './PushKeyUtils';
+import { AccountFragment, ApplePushKeyFragment } from '../../../graphql/generated';
+import Log from '../../../log';
+import { CredentialsContext } from '../../context';
 
 export class CreatePushKey {
-  constructor(private account: Account) {}
+  constructor(private readonly account: AccountFragment) {}
 
   public async runAsync(ctx: CredentialsContext): Promise<ApplePushKeyFragment> {
     if (ctx.nonInteractive) {
@@ -13,7 +12,7 @@ export class CreatePushKey {
     }
 
     const pushKey = await provideOrGeneratePushKeyAsync(ctx);
-    const result = await ctx.ios.createPushKeyAsync(this.account, pushKey);
+    const result = await ctx.ios.createPushKeyAsync(ctx.graphqlClient, this.account, pushKey);
     Log.succeed('Created push key');
     return result;
   }

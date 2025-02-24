@@ -1,114 +1,44 @@
-import { getConfig } from '@expo/config';
-import { Flags } from '@oclif/core';
-import gql from 'graphql-tag';
-
+import { CHANNELS_LIMIT, listAndRenderChannelsOnAppAsync } from '../../channel/queries';
 import EasCommand from '../../commandUtils/EasCommand';
-import { graphqlClient, withErrorHandlingAsync } from '../../graphql/client';
+import { EasNonInteractiveAndJsonFlags } from '../../commandUtils/flags';
 import {
-  GetAllChannelsForAppQuery,
-  GetAllChannelsForAppQueryVariables,
-} from '../../graphql/generated';
-import Log from '../../log';
-import { findProjectRootAsync, getProjectIdAsync } from '../../project/projectUtils';
-import formatFields from '../../utils/formatFields';
-import { enableJsonOutput, printJsonOnlyOutput } from '../../utils/json';
-import { logChannelDetails } from './view';
-
-const CHANNEL_LIMIT = 10_000;
-
-async function getAllUpdateChannelForAppAsync({
-  appId,
-}: {
-  appId: string;
-}): Promise<GetAllChannelsForAppQuery> {
-  return await withErrorHandlingAsync(
-    graphqlClient
-      .query<GetAllChannelsForAppQuery, GetAllChannelsForAppQueryVariables>(
-        gql`
-          query GetAllChannelsForApp($appId: String!, $offset: Int!, $limit: Int!) {
-            app {
-              byId(appId: $appId) {
-                id
-                updateChannels(offset: $offset, limit: $limit) {
-                  id
-                  name
-                  branchMapping
-                  updateBranches(offset: 0, limit: $limit) {
-                    id
-                    name
-                    updates(offset: 0, limit: 10) {
-                      id
-                      group
-                      message
-                      runtimeVersion
-                      createdAt
-                      platform
-                      actor {
-                        id
-                        ... on User {
-                          username
-                        }
-                        ... on Robot {
-                          firstName
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        `,
-        { appId, offset: 0, limit: CHANNEL_LIMIT },
-        { additionalTypenames: ['UpdateChannel', 'UpdateBranch', 'Update'] }
-      )
-      .toPromise()
-  );
-}
+  EasPaginatedQueryFlags,
+  getLimitFlagWithCustomValues,
+  getPaginatedQueryOptions,
+} from '../../commandUtils/pagination';
+import { enableJsonOutput } from '../../utils/json';
 
 export default class ChannelList extends EasCommand {
-  static description = 'list all channels';
+  static override description = 'list all channels';
 
-  static flags = {
-    json: Flags.boolean({
-      description: 'print output as a JSON object with the channel ID, name and branch mapping.',
-      default: false,
-    }),
+  static override flags = {
+    ...EasPaginatedQueryFlags,
+    limit: getLimitFlagWithCustomValues({ defaultTo: 10, limit: CHANNELS_LIMIT }),
+    ...EasNonInteractiveAndJsonFlags,
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectId,
+    ...this.ContextOptions.LoggedIn,
   };
 
   async runAsync(): Promise<void> {
+    const { flags } = await this.parse(ChannelList);
+    const paginatedQueryOptions = getPaginatedQueryOptions(flags);
+    const { json: jsonFlag, 'non-interactive': nonInteractive } = flags;
     const {
-      flags: { json: jsonFlag },
-    } = await this.parse(ChannelList);
+      projectId,
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(ChannelList, {
+      nonInteractive,
+    });
     if (jsonFlag) {
       enableJsonOutput();
     }
 
-    const projectDir = await findProjectRootAsync();
-    const { exp } = getConfig(projectDir, { skipSDKVersionRequirement: true });
-    const projectId = await getProjectIdAsync(exp);
-
-    const getAllUpdateChannelForAppResult = await getAllUpdateChannelForAppAsync({
-      appId: projectId,
+    await listAndRenderChannelsOnAppAsync(graphqlClient, {
+      projectId,
+      paginatedQueryOptions,
     });
-    const channels = getAllUpdateChannelForAppResult.app?.byId.updateChannels;
-    if (!channels) {
-      throw new Error(`Could not find channels on project with id ${projectId}`);
-    }
-
-    if (jsonFlag) {
-      printJsonOnlyOutput(channels);
-    } else {
-      for (const channel of channels) {
-        Log.addNewLineIfNone();
-        Log.log(
-          formatFields([
-            { label: 'Name', value: channel.name },
-            { label: 'ID', value: channel.id },
-          ])
-        );
-        logChannelDetails(channel);
-      }
-    }
   }
 }

@@ -1,12 +1,11 @@
-import { ApplePushKeyFragment } from '../../../graphql/generated';
+import { selectPushKeyAsync } from './PushKeyUtils';
+import { AccountFragment, ApplePushKeyFragment } from '../../../graphql/generated';
 import Log from '../../../log';
 import { confirmAsync } from '../../../prompts';
-import { Account } from '../../../user/Account';
 import { CredentialsContext } from '../../context';
-import { selectPushKeyAsync } from './PushKeyUtils';
 
 export class SelectAndRemovePushKey {
-  constructor(private account: Account) {}
+  constructor(private readonly account: AccountFragment) {}
 
   async runAsync(ctx: CredentialsContext): Promise<void> {
     const selected = await selectPushKeyAsync(ctx, this.account);
@@ -19,7 +18,7 @@ export class SelectAndRemovePushKey {
 }
 
 export class RemovePushKey {
-  constructor(private pushKey: ApplePushKeyFragment) {}
+  constructor(private readonly pushKey: ApplePushKeyFragment) {}
 
   public async runAsync(ctx: CredentialsContext): Promise<void> {
     if (ctx.nonInteractive) {
@@ -28,9 +27,14 @@ export class RemovePushKey {
 
     const apps = this.pushKey.iosAppCredentialsList.map(appCredentials => appCredentials.app);
     if (apps.length !== 0) {
-      const appFullNames = apps.map(app => app.fullName).join(',');
+      // iosAppCredentialsList is capped at 20 on www
+      const appFullNames = apps
+        .map(app => app.fullName)
+        .slice(0, 19)
+        .join(',');
+      const andMaybeMore = apps.length > 19 ? ' (and more)' : '';
       const confirm = await confirmAsync({
-        message: `Removing this push key will disable push notifications for ${appFullNames}. Do you want to continue?`,
+        message: `Removing this push key will disable push notifications for ${appFullNames}${andMaybeMore}. Do you want to continue?`,
       });
       if (!confirm) {
         Log.log('Aborting');
@@ -39,7 +43,7 @@ export class RemovePushKey {
     }
 
     Log.log('Removing Push Key');
-    await ctx.ios.deletePushKeyAsync(this.pushKey.id);
+    await ctx.ios.deletePushKeyAsync(ctx.graphqlClient, this.pushKey.id);
 
     let shouldRevoke = false;
     if (!ctx.nonInteractive) {

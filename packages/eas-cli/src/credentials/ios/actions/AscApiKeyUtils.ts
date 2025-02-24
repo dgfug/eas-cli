@@ -3,10 +3,10 @@ import fs from 'fs-extra';
 import { nanoid } from 'nanoid';
 import path from 'path';
 
-import { AppStoreConnectApiKeyFragment } from '../../../graphql/generated';
+import { formatAppleTeam } from './AppleTeamFormatting';
+import { AccountFragment, AppStoreConnectApiKeyFragment } from '../../../graphql/generated';
 import Log, { learnMore } from '../../../log';
 import { confirmAsync, promptAsync } from '../../../prompts';
-import { Account } from '../../../user/Account';
 import { fromNow } from '../../../utils/date';
 import { CredentialsContext } from '../../context';
 import {
@@ -21,7 +21,6 @@ import {
   ascApiKeyIssuerIdSchema,
 } from '../credentials';
 import { isAscApiKeyValidAndTrackedAsync } from '../validators/validateAscApiKey';
-import { formatAppleTeam } from './AppleTeamUtils';
 
 export enum AppStoreApiKeyPurpose {
   SUBMISSION_SERVICE = 'EAS Submit',
@@ -94,9 +93,8 @@ async function generateAscApiKeyAsync(
   ctx: CredentialsContext,
   purpose: AppStoreApiKeyPurpose
 ): Promise<MinimalAscApiKey> {
-  //console.log('debug');
   await ctx.appStore.ensureAuthenticatedAsync();
-  const ascApiKey = await ctx.appStore.createAscApiKeyAsync({
+  const ascApiKey = await ctx.appStore.createAscApiKeyAsync(ctx.analytics, {
     nickname: getAscApiKeyName(purpose),
   });
   return await getMinimalAscApiKeyAsync(ascApiKey);
@@ -168,10 +166,13 @@ async function getBestEffortIssuerIdAsync(
 
 export async function getAscApiKeysFromAccountAsync(
   ctx: CredentialsContext,
-  account: Account,
+  account: AccountFragment,
   { filterDifferentAppleTeam }: { filterDifferentAppleTeam?: boolean } = {}
 ): Promise<AppStoreConnectApiKeyFragment[]> {
-  const ascApiKeysForAccount = await ctx.ios.getAscApiKeysForAccountAsync(account);
+  const ascApiKeysForAccount = await ctx.ios.getAscApiKeysForAccountAsync(
+    ctx.graphqlClient,
+    account
+  );
 
   if (!filterDifferentAppleTeam) {
     return ascApiKeysForAccount;
@@ -182,7 +183,7 @@ export async function getAscApiKeysFromAccountAsync(
 
 export async function selectAscApiKeysFromAccountAsync(
   ctx: CredentialsContext,
-  account: Account,
+  account: AccountFragment,
   { filterDifferentAppleTeam }: { filterDifferentAppleTeam?: boolean } = {}
 ): Promise<AppStoreConnectApiKeyFragment | null> {
   const ascApiKeysForAccount = await getAscApiKeysFromAccountAsync(ctx, account, {
@@ -201,7 +202,7 @@ export async function selectAscApiKeysFromAccountAsync(
     }
     return null;
   }
-  return selectAscApiKeysAsync(ascApiKeysForAccount);
+  return await selectAscApiKeysAsync(ascApiKeysForAccount);
 }
 
 async function selectAscApiKeysAsync(

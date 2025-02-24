@@ -1,11 +1,14 @@
+import { JSONObject } from '@expo/json-file';
+import type { XCBuildConfiguration } from 'xcode';
+
 import {
+  AccountFragment,
   CommonIosAppCredentialsFragment,
   IosAppBuildCredentialsFragment,
 } from '../../graphql/generated';
-import { Account } from '../../user/Account';
 
 export interface App {
-  account: Account;
+  account: AccountFragment;
   projectName: string;
 }
 
@@ -14,6 +17,8 @@ export interface Target {
   buildConfiguration?: string;
   bundleIdentifier: string;
   parentBundleIdentifier?: string;
+  entitlements: JSONObject;
+  buildSettings?: XCBuildConfiguration['buildSettings'];
 }
 
 export interface TargetCredentials {

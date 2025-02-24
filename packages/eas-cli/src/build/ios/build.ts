@@ -1,57 +1,75 @@
-import { IOSConfig } from '@expo/config-plugins';
-import { Ios, Job, Metadata, Platform, Workflow } from '@expo/eas-build-job';
-import type { XCBuildConfiguration } from 'xcode';
+import { Ios, Metadata, Platform, Workflow } from '@expo/eas-build-job';
+import { AppVersionSource } from '@expo/eas-json';
 
-import { IosCredentials, Target } from '../../credentials/ios/types';
+import { ensureIosCredentialsAsync } from './credentials';
+import { transformJob } from './graphql';
+import { prepareJobAsync } from './prepareJob';
+import { syncProjectConfigurationAsync } from './syncProjectConfiguration';
+import { resolveRemoteBuildNumberAsync } from './version';
+import { IosCredentials } from '../../credentials/ios/types';
+import { BuildParamsInput } from '../../graphql/generated';
 import { BuildMutation, BuildResult } from '../../graphql/mutations/BuildMutation';
 import { ensureBundleIdentifierIsDefinedForManagedProjectAsync } from '../../project/ios/bundleIdentifier';
+import { ensureNonExemptEncryptionIsDefinedForManagedProjectAsync } from '../../project/ios/exemptEncryption';
 import { resolveXcodeBuildContextAsync } from '../../project/ios/scheme';
 import { findApplicationTarget, resolveTargetsAsync } from '../../project/ios/target';
 import { BuildRequestSender, JobData, prepareBuildRequestForPlatformAsync } from '../build';
 import { BuildContext, CommonContext, IosBuildContext } from '../context';
 import { transformMetadata } from '../graphql';
-import { checkGoogleServicesFileAsync, checkNodeEnvVariable } from '../validate';
-import { ensureIosCredentialsAsync } from './credentials';
-import { transformJob } from './graphql';
-import { prepareJobAsync } from './prepareJob';
-import { syncProjectConfigurationAsync } from './syncProjectConfiguration';
+import {
+  checkGoogleServicesFileAsync,
+  checkNodeEnvVariable,
+  validatePNGsForManagedProjectAsync,
+} from '../validate';
 
 export async function createIosContextAsync(
   ctx: CommonContext<Platform.IOS>
 ): Promise<IosBuildContext> {
-  const { buildProfile } = ctx;
+  const { buildProfile, env } = ctx;
 
   if (ctx.workflow === Workflow.MANAGED) {
-    await ensureBundleIdentifierIsDefinedForManagedProjectAsync(ctx.projectDir, ctx.exp);
+    await ensureBundleIdentifierIsDefinedForManagedProjectAsync(ctx);
+    await ensureNonExemptEncryptionIsDefinedForManagedProjectAsync(ctx);
   }
 
   checkNodeEnvVariable(ctx);
   await checkGoogleServicesFileAsync(ctx);
+  await validatePNGsForManagedProjectAsync(ctx);
 
   const xcodeBuildContext = await resolveXcodeBuildContextAsync(
     {
       projectDir: ctx.projectDir,
       nonInteractive: ctx.nonInteractive,
       exp: ctx.exp,
+      vcsClient: ctx.vcsClient,
     },
     buildProfile
   );
-  const targets = await resolveTargetsAsync(
-    {
-      projectDir: ctx.projectDir,
-      exp: ctx.exp,
-    },
-    xcodeBuildContext
-  );
+  const targets = await resolveTargetsAsync({
+    projectDir: ctx.projectDir,
+    exp: ctx.exp,
+    xcodeBuildContext,
+    env,
+    vcsClient: ctx.vcsClient,
+  });
   const applicationTarget = findApplicationTarget(targets);
-  const applicationTargetBuildSettings = resolveBuildSettings(ctx, applicationTarget);
-
+  const buildNumberOverride =
+    ctx.easJsonCliConfig?.appVersionSource === AppVersionSource.REMOTE
+      ? await resolveRemoteBuildNumberAsync(ctx.graphqlClient, {
+          projectDir: ctx.projectDir,
+          projectId: ctx.projectId,
+          exp: ctx.exp,
+          applicationTarget,
+          buildProfile,
+          vcsClient: ctx.vcsClient,
+        })
+      : undefined;
   return {
     bundleIdentifier: applicationTarget.bundleIdentifier,
     applicationTarget,
-    applicationTargetBuildSettings,
     targets,
     xcodeBuildContext,
+    buildNumberOverride,
   };
 }
 
@@ -61,20 +79,25 @@ export async function prepareIosBuildAsync(
   return await prepareBuildRequestForPlatformAsync({
     ctx,
     ensureCredentialsAsync: async (ctx: BuildContext<Platform.IOS>) => {
-      return ensureIosCredentialsAsync(ctx, ctx.ios.targets);
+      return await ensureIosCredentialsAsync(ctx, ctx.ios.targets);
     },
     syncProjectConfigurationAsync: async () => {
       await syncProjectConfigurationAsync({
         projectDir: ctx.projectDir,
         exp: ctx.exp,
-        buildProfile: ctx.buildProfile,
-        buildSettings: ctx.ios.applicationTargetBuildSettings,
+        targets: ctx.ios.targets,
+        localAutoIncrement:
+          ctx.easJsonCliConfig?.appVersionSource === AppVersionSource.REMOTE
+            ? false
+            : ctx.buildProfile.autoIncrement,
+        vcsClient: ctx.vcsClient,
+        env: ctx.env,
       });
     },
     prepareJobAsync: async (
       ctx: BuildContext<Platform.IOS>,
       jobData: JobData<IosCredentials>
-    ): Promise<Job> => {
+    ): Promise<Ios.Job> => {
       return await prepareJobAsync(ctx, {
         ...jobData,
         buildScheme: ctx.ios.xcodeBuildContext.buildScheme,
@@ -83,30 +106,17 @@ export async function prepareIosBuildAsync(
     sendBuildRequestAsync: async (
       appId: string,
       job: Ios.Job,
-      metadata: Metadata
+      metadata: Metadata,
+      buildParams: BuildParamsInput
     ): Promise<BuildResult> => {
       const graphqlMetadata = transformMetadata(metadata);
       const graphqlJob = transformJob(job);
-      return await BuildMutation.createIosBuildAsync({
+      return await BuildMutation.createIosBuildAsync(ctx.graphqlClient, {
         appId,
         job: graphqlJob,
         metadata: graphqlMetadata,
+        buildParams,
       });
     },
   });
-}
-
-function resolveBuildSettings(
-  ctx: CommonContext<Platform.IOS>,
-  applicationTarget: Target
-): XCBuildConfiguration['buildSettings'] {
-  if (ctx.workflow === Workflow.MANAGED) {
-    return {};
-  }
-  const project = IOSConfig.XcodeUtils.getPbxproj(ctx.projectDir);
-  const xcBuildConfiguration = IOSConfig.Target.getXCBuildConfigurationFromPbxproj(project, {
-    targetName: applicationTarget.targetName,
-    buildConfiguration: applicationTarget.buildConfiguration,
-  });
-  return xcBuildConfiguration?.buildSettings ?? {};
 }

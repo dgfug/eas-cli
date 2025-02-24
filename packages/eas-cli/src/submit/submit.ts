@@ -1,43 +1,47 @@
 import { Platform } from '@expo/eas-build-job';
 import chalk from 'chalk';
 
-import { withAnalyticsAsync } from '../analytics/common';
-import { SubmissionEvent } from '../analytics/events';
-import { AppPlatform, SubmissionFragment, SubmissionStatus } from '../graphql/generated';
-import Log, { link } from '../log';
-import { appPlatformDisplayNames, appPlatformEmojis } from '../platform';
 import AndroidSubmitCommand from './android/AndroidSubmitCommand';
 import { SubmissionContext } from './context';
 import IosSubmitCommand from './ios/IosSubmitCommand';
 import { displayLogsAsync } from './utils/logs';
 import { waitForSubmissionsEndAsync } from './utils/wait';
+import { SubmissionEvent } from '../analytics/AnalyticsManager';
+import { withAnalyticsAsync } from '../analytics/common';
+import { ExpoGraphqlClient } from '../commandUtils/context/contextUtils/createGraphqlClient';
+import { AppPlatform, SubmissionFragment, SubmissionStatus } from '../graphql/generated';
+import Log, { link } from '../log';
+import { appPlatformDisplayNames, appPlatformEmojis } from '../platform';
 
 export async function submitAsync<T extends Platform>(
   ctx: SubmissionContext<T>
 ): Promise<SubmissionFragment> {
   return await withAnalyticsAsync(
+    ctx.analytics,
     async () => {
       const command =
         ctx.platform === Platform.ANDROID
           ? new AndroidSubmitCommand(ctx as SubmissionContext<Platform.ANDROID>)
           : new IosSubmitCommand(ctx as SubmissionContext<Platform.IOS>);
-      return command.runAsync();
+      const submitter = await command.runAsync();
+      return await submitter.submitAsync();
     },
     {
       attemptEvent: SubmissionEvent.SUBMIT_COMMAND_ATTEMPT,
       successEvent: SubmissionEvent.SUBMIT_COMMAND_SUCCESS,
       failureEvent: SubmissionEvent.SUBMIT_COMMAND_FAIL,
-      trackingCtx: ctx.trackingCtx,
+      properties: ctx.analyticsEventProperties,
     }
   );
 }
 
 export async function waitToCompleteAsync(
+  graphqlClient: ExpoGraphqlClient,
   submissions: SubmissionFragment[],
   { verbose = false }: { verbose?: boolean } = {}
-): Promise<void> {
+): Promise<SubmissionFragment[]> {
   Log.newLine();
-  const completedSubmissions = await waitForSubmissionsEndAsync(submissions);
+  const completedSubmissions = await waitForSubmissionsEndAsync(graphqlClient, submissions);
   const moreSubmissions = completedSubmissions.length > 1;
   if (moreSubmissions) {
     Log.newLine();
@@ -60,7 +64,7 @@ export async function waitToCompleteAsync(
       Log.newLine();
     }
   }
-  exitWithNonZeroCodeIfSomeSubmissionsDidntFinish(completedSubmissions);
+  return completedSubmissions;
 }
 
 function printInstructionsForAndroidSubmission(submission: SubmissionFragment): void {
@@ -74,12 +78,12 @@ function printInstructionsForIosSubmission(submission: SubmissionFragment): void
   if (submission.status === SubmissionStatus.Finished) {
     const logMsg = [
       chalk.bold('Your binary has been successfully uploaded to App Store Connect!'),
-      '- It is now being processed by Apple - you will receive an e-mail when the processing finishes.',
+      '- It is now being processed by Apple - you will receive an email when the processing finishes.',
       '- It usually takes about 5-10 minutes depending on how busy Apple servers are.',
       // ascAppIdentifier should be always available for ios submissions but check it anyway
       submission.iosConfig?.ascAppIdentifier &&
-        `- When it’s done, you can see your build here: ${link(
-          `https://appstoreconnect.apple.com/apps/${submission.iosConfig?.ascAppIdentifier}/appstore/ios`
+        `- When it's done, you can see your build here: ${link(
+          `https://appstoreconnect.apple.com/apps/${submission.iosConfig?.ascAppIdentifier}/testflight/ios`
         )}`,
     ].join('\n');
     Log.addNewLineIfNone();
@@ -87,7 +91,9 @@ function printInstructionsForIosSubmission(submission: SubmissionFragment): void
   }
 }
 
-function exitWithNonZeroCodeIfSomeSubmissionsDidntFinish(submissions: SubmissionFragment[]): void {
+export function exitWithNonZeroCodeIfSomeSubmissionsDidntFinish(
+  submissions: SubmissionFragment[]
+): void {
   const nonFinishedSubmissions = submissions.filter(
     ({ status }) => status !== SubmissionStatus.Finished
   );

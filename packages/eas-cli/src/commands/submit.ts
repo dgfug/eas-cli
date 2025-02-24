@@ -1,9 +1,9 @@
-import { getConfig } from '@expo/config';
+import { EasJsonAccessor } from '@expo/eas-json';
 import { Errors, Flags } from '@oclif/core';
 import chalk from 'chalk';
 
 import EasCommand from '../commandUtils/EasCommand';
-import { SubmissionFragment } from '../graphql/generated';
+import { StatuspageServiceName, SubmissionFragment } from '../graphql/generated';
 import { toAppPlatform } from '../graphql/types/AppPlatform';
 import Log from '../log';
 import {
@@ -13,11 +13,15 @@ import {
   selectRequestedPlatformAsync,
   toPlatforms,
 } from '../platform';
-import { findProjectRootAsync, getProjectIdAsync } from '../project/projectUtils';
 import { SubmitArchiveFlags, createSubmissionContextAsync } from '../submit/context';
-import { submitAsync, waitToCompleteAsync } from '../submit/submit';
+import {
+  exitWithNonZeroCodeIfSomeSubmissionsDidntFinish,
+  submitAsync,
+  waitToCompleteAsync,
+} from '../submit/submit';
 import { printSubmissionDetailsUrls } from '../submit/utils/urls';
 import { getProfilesAsync } from '../utils/profiles';
+import { maybeWarnAboutEasOutagesAsync } from '../utils/statuspageService';
 
 interface RawCommandFlags {
   platform?: string;
@@ -29,6 +33,7 @@ interface RawCommandFlags {
   verbose: boolean;
   wait: boolean;
   'non-interactive': boolean;
+  'verbose-fastlane': boolean;
 }
 
 interface CommandFlags {
@@ -38,18 +43,20 @@ interface CommandFlags {
   verbose: boolean;
   wait: boolean;
   nonInteractive: boolean;
+  isVerboseFastlaneEnabled: boolean;
 }
 
 export default class Submit extends EasCommand {
-  static description = 'submit app binary to App Store and/or Play Store';
-  static aliases = ['build:submit'];
+  static override description = 'submit app binary to App Store and/or Play Store';
+  static override aliases = ['build:submit'];
 
-  static flags = {
+  static override flags = {
     platform: Flags.enum({
       char: 'p',
       options: ['android', 'ios', 'all'],
     }),
     profile: Flags.string({
+      char: 'e',
       description:
         'Name of the submit profile from eas.json. Defaults to "production" if defined in eas.json.',
     }),
@@ -70,7 +77,7 @@ export default class Submit extends EasCommand {
       exclusive: ['latest', 'id', 'path'],
     }),
     verbose: Flags.boolean({
-      description: 'Always print logs from Submission Service',
+      description: 'Always print logs from EAS Submit',
       default: false,
     }),
     wait: Flags.boolean({
@@ -78,37 +85,68 @@ export default class Submit extends EasCommand {
       default: true,
       allowNo: true,
     }),
+    'verbose-fastlane': Flags.boolean({
+      default: false,
+      description: 'Enable verbose logging for the submission process',
+    }),
     'non-interactive': Flags.boolean({
       default: false,
       description: 'Run command in non-interactive mode',
     }),
   };
 
+  static override contextDefinition = {
+    ...this.ContextOptions.LoggedIn,
+    ...this.ContextOptions.ProjectConfig,
+    ...this.ContextOptions.ProjectDir,
+    ...this.ContextOptions.Analytics,
+    ...this.ContextOptions.Vcs,
+  };
+
   async runAsync(): Promise<void> {
     const { flags: rawFlags } = await this.parse(Submit);
-    const flags = await this.sanitizeFlagsAsync(rawFlags);
+    const {
+      loggedIn: { actor, graphqlClient },
+      privateProjectConfig: { exp, projectId, projectDir },
+      analytics,
+      vcsClient,
+    } = await this.getContextAsync(Submit, {
+      nonInteractive: false,
+      withServerSideEnvironment: null,
+    });
 
-    const projectDir = await findProjectRootAsync();
-    const { exp } = getConfig(projectDir, { skipSDKVersionRequirement: true });
-    const projectId = await getProjectIdAsync(exp);
+    const flags = this.sanitizeFlags(rawFlags);
 
-    const platforms = toPlatforms(flags.requestedPlatform);
+    await maybeWarnAboutEasOutagesAsync(graphqlClient, [StatuspageServiceName.EasSubmit]);
+
+    const flagsWithPlatform = await this.ensurePlatformSelectedAsync(flags);
+
+    const platforms = toPlatforms(flagsWithPlatform.requestedPlatform);
     const submissionProfiles = await getProfilesAsync({
       type: 'submit',
-      projectDir,
+      easJsonAccessor: EasJsonAccessor.fromProjectPath(projectDir),
       platforms,
-      profileName: flags.profile,
+      profileName: flagsWithPlatform.profile,
+      projectDir,
     });
 
     const submissions: SubmissionFragment[] = [];
     for (const submissionProfile of submissionProfiles) {
+      // this command doesn't make use of env when getting the project config
       const ctx = await createSubmissionContextAsync({
         platform: submissionProfile.platform,
         projectDir,
-        projectId,
         profile: submissionProfile.profile,
-        archiveFlags: flags.archiveFlags,
-        nonInteractive: flags.nonInteractive,
+        archiveFlags: flagsWithPlatform.archiveFlags,
+        nonInteractive: flagsWithPlatform.nonInteractive,
+        isVerboseFastlaneEnabled: flagsWithPlatform.isVerboseFastlaneEnabled,
+        actor,
+        graphqlClient,
+        analytics,
+        exp,
+        projectId,
+        vcsClient,
+        specifiedProfile: flagsWithPlatform.profile,
       });
 
       if (submissionProfiles.length > 1) {
@@ -128,18 +166,24 @@ export default class Submit extends EasCommand {
     Log.newLine();
     printSubmissionDetailsUrls(submissions);
 
-    if (flags.wait) {
-      await waitToCompleteAsync(submissions, { verbose: flags.verbose });
+    if (flagsWithPlatform.wait) {
+      const completedSubmissions = await waitToCompleteAsync(graphqlClient, submissions, {
+        verbose: flagsWithPlatform.verbose,
+      });
+      exitWithNonZeroCodeIfSomeSubmissionsDidntFinish(completedSubmissions);
     }
   }
 
-  private async sanitizeFlagsAsync(flags: RawCommandFlags): Promise<CommandFlags> {
+  private sanitizeFlags(
+    flags: RawCommandFlags
+  ): Omit<CommandFlags, 'requestedPlatform'> & { requestedPlatform?: RequestedPlatform } {
     const {
       platform,
       verbose,
       wait,
       profile,
       'non-interactive': nonInteractive,
+      'verbose-fastlane': isVerboseFastlaneEnabled,
       ...archiveFlags
     } = flags;
 
@@ -147,15 +191,11 @@ export default class Submit extends EasCommand {
       Errors.error('--platform is required when building in non-interactive mode', { exit: 1 });
     }
 
-    const requestedPlatform = await selectRequestedPlatformAsync(flags.platform);
-    if (requestedPlatform === RequestedPlatform.All) {
-      if (archiveFlags.id || archiveFlags.path || archiveFlags.url) {
-        Errors.error(
-          '--id, --path, and --url params are only supported when performing a single-platform submit',
-          { exit: 1 }
-        );
-      }
-    }
+    const requestedPlatform =
+      flags.platform &&
+      Object.values(RequestedPlatform).includes(flags.platform.toLowerCase() as RequestedPlatform)
+        ? (flags.platform.toLowerCase() as RequestedPlatform)
+        : undefined;
 
     return {
       archiveFlags,
@@ -164,6 +204,27 @@ export default class Submit extends EasCommand {
       wait,
       profile,
       nonInteractive,
+      isVerboseFastlaneEnabled,
+    };
+  }
+
+  private async ensurePlatformSelectedAsync(
+    flags: Omit<CommandFlags, 'requestedPlatform'> & { requestedPlatform?: RequestedPlatform }
+  ): Promise<CommandFlags> {
+    const requestedPlatform = await selectRequestedPlatformAsync(flags.requestedPlatform);
+
+    if (requestedPlatform === RequestedPlatform.All) {
+      if (flags.archiveFlags.id || flags.archiveFlags.path || flags.archiveFlags.url) {
+        Errors.error(
+          '--id, --path, and --url params are only supported when performing a single-platform submit',
+          { exit: 1 }
+        );
+      }
+    }
+
+    return {
+      ...flags,
+      requestedPlatform,
     };
   }
 }
