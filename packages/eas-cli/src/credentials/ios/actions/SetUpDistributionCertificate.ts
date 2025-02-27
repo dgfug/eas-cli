@@ -1,5 +1,8 @@
 import assert from 'assert';
 
+import { resolveAppleTeamIfAuthenticatedAsync } from './AppleTeamUtils';
+import { CreateDistributionCertificate } from './CreateDistributionCertificate';
+import { formatDistributionCertificate } from './DistributionCertificateUtils';
 import {
   AppleDistributionCertificate,
   AppleDistributionCertificateFragment,
@@ -10,24 +13,25 @@ import { confirmAsync, promptAsync } from '../../../prompts';
 import sortBy from '../../../utils/expodash/sortBy';
 import { CredentialsContext } from '../../context';
 import { MissingCredentialsNonInteractiveError } from '../../errors';
-import { AppLookupParams } from '../api/GraphqlClient';
 import { AppleDistributionCertificateMutationResult } from '../api/graphql/mutations/AppleDistributionCertificateMutation';
+import { AppLookupParams } from '../api/graphql/types/AppLookupParams';
 import { getValidCertSerialNumbers } from '../appstore/CredentialsUtils';
 import { AppleTeamMissingError } from '../errors';
-import { resolveAppleTeamIfAuthenticatedAsync } from './AppleTeamUtils';
-import { CreateDistributionCertificate } from './CreateDistributionCertificate';
-import { formatDistributionCertificate } from './DistributionCertificateUtils';
 
 export class SetUpDistributionCertificate {
   private validDistCerts?: AppleDistributionCertificateFragment[];
 
-  constructor(private app: AppLookupParams, private distributionType: IosDistributionType) {}
+  constructor(
+    private readonly app: AppLookupParams,
+    private readonly distributionType: IosDistributionType
+  ) {}
 
   public async runAsync(ctx: CredentialsContext): Promise<AppleDistributionCertificateFragment> {
     const appleTeam = await resolveAppleTeamIfAuthenticatedAsync(ctx, this.app);
 
     try {
       const currentCertificate = await ctx.ios.getDistributionCertificateForAppAsync(
+        ctx.graphqlClient,
         this.app,
         this.distributionType,
         { appleTeam }
@@ -149,7 +153,7 @@ export class SetUpDistributionCertificate {
   private async createNewDistCertAsync(
     ctx: CredentialsContext
   ): Promise<AppleDistributionCertificateMutationResult> {
-    return new CreateDistributionCertificate(this.app.account).runAsync(ctx);
+    return await new CreateDistributionCertificate(this.app.account).runAsync(ctx);
   }
 
   async reuseDistCertAsync(ctx: CredentialsContext): Promise<AppleDistributionCertificate> {
@@ -179,6 +183,7 @@ export class SetUpDistributionCertificate {
     const validDistCertSerialNumberSet = new Set(validDistCertSerialNumbers);
 
     const distCertsForAccount = await ctx.ios.getDistributionCertificatesForAccountAsync(
+      ctx.graphqlClient,
       this.app.account
     );
     const distCertsForAppleTeam = distCertsForAccount.filter(distCert => {

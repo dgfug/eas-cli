@@ -1,9 +1,12 @@
 import fg from 'fast-glob';
-import fs from 'fs-extra';
+import fs from 'fs/promises';
+import fsExtra from 'fs-extra';
 import createIgnore, { Ignore as SingleFileIgnore } from 'ignore';
 import path from 'path';
 
-const EASIGNORE_FILENAME = '.easignore';
+import Log from '../log';
+
+export const EASIGNORE_FILENAME = '.easignore';
 const GITIGNORE_FILENAME = '.gitignore';
 
 const DEFAULT_IGNORE = `
@@ -30,17 +33,27 @@ export function getRootPath(): string {
  * - if .easignore exists, .gitignore files are not used.
  */
 export class Ignore {
-  private ignoreMapping: (readonly [string, SingleFileIgnore])[] = [];
+  public ignoreMapping: (readonly [string, SingleFileIgnore])[] = [];
 
-  constructor(private rootDir: string) {}
+  private constructor(private readonly rootDir: string) {}
+
+  static async createAsync(rootDir: string): Promise<Ignore> {
+    const ignore = new Ignore(rootDir);
+    await ignore.initIgnoreAsync();
+    return ignore;
+  }
 
   public async initIgnoreAsync(): Promise<void> {
     const easIgnorePath = path.join(this.rootDir, EASIGNORE_FILENAME);
-    if (await fs.pathExists(easIgnorePath)) {
+    if (await fsExtra.pathExists(easIgnorePath)) {
       this.ignoreMapping = [
         ['', createIgnore().add(DEFAULT_IGNORE)],
-        ['', createIgnore().add(await fs.readFile(easIgnorePath, 'utf8'))],
+        ['', createIgnore().add(await fsExtra.readFile(easIgnorePath, 'utf-8'))],
       ];
+
+      Log.debug('initializing ignore mapping with .easignore', {
+        ignoreMapping: this.ignoreMapping,
+      });
       return;
     }
     const ignoreFilePaths = (
@@ -57,11 +70,16 @@ export class Ignore {
       ignoreFilePaths.map(async filePath => {
         return [
           filePath.slice(0, filePath.length - GITIGNORE_FILENAME.length),
-          createIgnore().add(await fs.readFile(path.join(this.rootDir, filePath), 'utf8')),
+          createIgnore().add(await fsExtra.readFile(path.join(this.rootDir, filePath), 'utf-8')),
         ] as const;
       })
     );
     this.ignoreMapping = [['', createIgnore().add(DEFAULT_IGNORE)], ...ignoreMapping];
+
+    Log.debug('initializing ignore mapping with .gitignore files', {
+      ignoreFilePaths,
+      ignoreMapping: this.ignoreMapping,
+    });
   }
 
   public ignores(relativePath: string): boolean {
@@ -74,15 +92,37 @@ export class Ignore {
   }
 }
 
-export async function makeShallowCopyAsync(src: string, dst: string): Promise<void> {
-  const ignore = new Ignore(src);
-  await ignore.initIgnoreAsync();
-  await fs.copy(src, dst, {
-    filter: (srcFilePath: string) => {
+export async function makeShallowCopyAsync(_src: string, dst: string): Promise<void> {
+  // `node:fs` on Windows adds a namespace prefix (e.g. `\\?\`) to the path provided
+  // to the `filter` function in `fs.cp`. We need to ensure that we compare the right paths
+  // (both with prefix), otherwise the `relativePath` ends up being wrong and causes no files
+  // to be ignored.
+  const src = path.toNamespacedPath(path.normalize(_src));
+
+  Log.debug('makeShallowCopyAsync', { src, dst });
+  const ignore = await Ignore.createAsync(src);
+  Log.debug('makeShallowCopyAsync ignoreMapping', { ignoreMapping: ignore.ignoreMapping });
+
+  await fs.cp(src, dst, {
+    recursive: true,
+    // Preserve symlinks without re-resolving them to their original targets
+    verbatimSymlinks: true,
+    filter: (_srcFilePath: string) => {
+      const srcFilePath = path.toNamespacedPath(_srcFilePath);
+
       if (srcFilePath === src) {
         return true;
       }
-      return !ignore.ignores(path.relative(src, srcFilePath));
+      const relativePath = path.relative(src, srcFilePath);
+      const shouldCopyTheItem = !ignore.ignores(relativePath);
+
+      Log.debug(shouldCopyTheItem ? 'copying' : 'skipping', {
+        src,
+        srcFilePath,
+        relativePath,
+      });
+
+      return shouldCopyTheItem;
     },
   });
 }

@@ -12,7 +12,7 @@ import { APPLE_DEVICE_CLASS_LABELS } from '../../../graphql/types/credentials/Ap
 import Log from '../../../log';
 import { fromNow } from '../../../utils/date';
 import formatFields from '../../../utils/formatFields';
-import { AppLookupParams } from '../api/GraphqlClient';
+import { AppLookupParams } from '../api/graphql/types/AppLookupParams';
 import { App, IosAppBuildCredentialsMap, IosAppCredentialsMap, Target } from '../types';
 
 function prettyIosDistributionType(distributionType: IosDistributionType): string {
@@ -123,7 +123,7 @@ export function displayIosCredentials(
 export function displayProjectCredentials(
   app: App,
   appBuildCredentials: IosAppBuildCredentialsMap,
-  targets: Target[]
+  targets: Omit<Target, 'entitlements'>[]
 ): void {
   const projectFullName = `@${app.account.name}/${app.projectName}`;
   const targetToBundleId = targets.reduce<Record<string, string>>((acc, target) => {

@@ -1,17 +1,21 @@
 import { print } from 'graphql';
 import gql from 'graphql-tag';
 
-import { graphqlClient, withErrorHandlingAsync } from '../../../../../graphql/client';
+import { ExpoGraphqlClient } from '../../../../../commandUtils/context/contextUtils/createGraphqlClient';
+import { withErrorHandlingAsync } from '../../../../../graphql/client';
 import {
   AppleDeviceFragment,
   AppleDeviceInput,
+  AppleDeviceUpdateInput,
   CreateAppleDeviceMutation,
   DeleteAppleDeviceResult,
+  UpdateAppleDeviceMutation,
 } from '../../../../../graphql/generated';
 import { AppleDeviceFragmentNode } from '../../../../../graphql/types/credentials/AppleDevice';
 
 export const AppleDeviceMutation = {
   async createAppleDeviceAsync(
+    graphqlClient: ExpoGraphqlClient,
     appleDeviceInput: AppleDeviceInput,
     accountId: string
   ): Promise<AppleDeviceFragment> {
@@ -41,7 +45,10 @@ export const AppleDeviceMutation = {
     );
     return data.appleDevice.createAppleDevice;
   },
-  async deleteAppleDeviceAsync(deviceId: string): Promise<string> {
+  async deleteAppleDeviceAsync(
+    graphqlClient: ExpoGraphqlClient,
+    deviceId: string
+  ): Promise<string> {
     const data = await withErrorHandlingAsync(
       graphqlClient
         .mutation<DeleteAppleDeviceResult>(
@@ -61,5 +68,36 @@ export const AppleDeviceMutation = {
         .toPromise()
     );
     return data.id;
+  },
+  async updateAppleDeviceAsync(
+    graphqlClient: ExpoGraphqlClient,
+    id: string,
+    appleDeviceUpdateInput: AppleDeviceUpdateInput
+  ): Promise<AppleDeviceFragment> {
+    const data = await withErrorHandlingAsync(
+      graphqlClient
+        .mutation<UpdateAppleDeviceMutation>(
+          gql`
+            mutation UpdateAppleDeviceMutation(
+              $id: ID!
+              $appleDeviceUpdateInput: AppleDeviceUpdateInput!
+            ) {
+              appleDevice {
+                updateAppleDevice(id: $id, appleDeviceUpdateInput: $appleDeviceUpdateInput) {
+                  id
+                  ...AppleDeviceFragment
+                }
+              }
+            }
+            ${print(AppleDeviceFragmentNode)}
+          `,
+          {
+            id,
+            appleDeviceUpdateInput,
+          }
+        )
+        .toPromise()
+    );
+    return data.appleDevice.updateAppleDevice;
   },
 };

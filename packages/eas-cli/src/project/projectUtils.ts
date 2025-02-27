@@ -1,40 +1,23 @@
-import { ExpoConfig, getConfigFilePaths, getPackageJson, modifyConfigAsync } from '@expo/config';
-import { Env } from '@expo/eas-build-job';
+import { ExpoConfig, getConfigFilePaths, getPackageJson } from '@expo/config';
 import chalk from 'chalk';
+import fs from 'fs-extra';
 import path from 'path';
-import pkgDir from 'pkg-dir';
+import resolveFrom from 'resolve-from';
 import semver from 'semver';
 
-import { AppPrivacy } from '../graphql/generated';
-import Log from '../log';
-import { confirmAsync } from '../prompts';
+import { getEASUpdateURL } from '../api';
+import { ExpoGraphqlClient } from '../commandUtils/context/contextUtils/createGraphqlClient';
+import { AccountFragment } from '../graphql/generated';
+import { AppQuery } from '../graphql/queries/AppQuery';
+import Log, { learnMore } from '../log';
 import { Actor } from '../user/User';
-import { ensureLoggedInAsync } from '../user/actions';
 import { expoCommandAsync } from '../utils/expoCli';
-import { getVcsClient } from '../vcs';
-import {
-  ensureProjectExistsAsync,
-  findProjectIdByAccountNameAndSlugNullableAsync,
-} from './ensureProjectExists';
-import { getExpoConfig } from './expoConfig';
-
-export function getProjectAccountName(exp: ExpoConfig, user: Actor): string {
-  switch (user.__typename) {
-    case 'User':
-      return exp.owner || user.username;
-    case 'Robot':
-      if (!exp.owner) {
-        throw new Error(
-          'The "owner" manifest property is required when using robot users. See: https://docs.expo.dev/versions/latest/config/app/#owner'
-        );
-      }
-      return exp.owner;
-  }
-}
 
 export function getUsername(exp: ExpoConfig, user: Actor): string | undefined {
   switch (user.__typename) {
     case 'User':
+      return user.username;
+    case 'SSOUser':
       return user.username;
     case 'Robot':
       // owner field is necessary to run `expo prebuild`
@@ -46,131 +29,6 @@ export function getUsername(exp: ExpoConfig, user: Actor): string | undefined {
       // robot users don't have usernames
       return undefined;
   }
-}
-
-export async function getProjectAccountNameAsync(exp: ExpoConfig): Promise<string> {
-  const user = await ensureLoggedInAsync();
-  return getProjectAccountName(exp, user);
-}
-
-export async function findProjectRootAsync({
-  cwd,
-  defaultToProcessCwd = false,
-}: {
-  cwd?: string;
-  defaultToProcessCwd?: boolean;
-} = {}): Promise<string> {
-  const projectRootDir = await pkgDir(cwd);
-  if (!projectRootDir) {
-    if (!defaultToProcessCwd) {
-      throw new Error('Please run this command inside a project directory.');
-    } else {
-      return process.cwd();
-    }
-  } else {
-    let vcsRoot;
-    try {
-      vcsRoot = path.normalize(await getVcsClient().getRootPathAsync());
-    } catch {}
-    if (vcsRoot && vcsRoot.startsWith(projectRootDir) && vcsRoot !== projectRootDir) {
-      throw new Error(
-        `package.json is outside of the current git repository (project root: ${projectRootDir}, git root: ${vcsRoot}.`
-      );
-    }
-    return projectRootDir;
-  }
-}
-
-export async function setProjectIdAsync(
-  projectDir: string,
-  options: { env?: Env } = {}
-): Promise<ExpoConfig | undefined> {
-  const exp = getExpoConfig(projectDir, options);
-
-  const privacy = toAppPrivacy(exp.privacy);
-  const projectId = await ensureProjectExistsAsync({
-    accountName: getProjectAccountName(exp, await ensureLoggedInAsync()),
-    projectName: exp.slug,
-    privacy,
-  });
-
-  const result = await modifyConfigAsync(projectDir, {
-    extra: { ...exp.extra, eas: { ...exp.extra?.eas, projectId } },
-  });
-
-  switch (result.type) {
-    case 'success':
-      break;
-    case 'warn': {
-      Log.log();
-      Log.warn('It looks like you are using a dynamic configuration!');
-      Log.log(
-        chalk.dim(
-          'https://docs.expo.dev/workflow/configuration/#dynamic-configuration-with-appconfigjs)\n'
-        )
-      );
-      Log.warn(
-        'In order to finish setting up your project you are going to need manually add the following to your "extra" key:\n\n'
-      );
-      Log.log(chalk.bold(`"extra": {\n  ...\n  "eas": {\n    "projectId": "${projectId}"\n  }\n}`));
-      throw new Error(result.message);
-    }
-    case 'fail':
-      throw new Error(result.message);
-    default:
-      throw new Error('Unexpected result type from modifyConfigAsync');
-  }
-
-  Log.withTick(`Linked app.json to project with ID ${chalk.bold(projectId)}`);
-  return result.config?.expo;
-}
-
-export async function getProjectIdAsync(
-  exp: ExpoConfig,
-  options: { env?: Env } = {}
-): Promise<string> {
-  if (!process.env.EAS_ENABLE_PROJECT_ID) {
-    const privacy = toAppPrivacy(exp.privacy);
-    return await ensureProjectExistsAsync({
-      accountName: getProjectAccountName(exp, await ensureLoggedInAsync()),
-      projectName: exp.slug,
-      privacy,
-    });
-  }
-
-  const localProjectId = exp.extra?.eas?.projectId;
-  if (localProjectId) {
-    return localProjectId;
-  }
-
-  // Set the project ID if it is missing.
-  const projectDir = await findProjectRootAsync();
-  if (!projectDir) {
-    throw new Error('Please run this command inside a project directory.');
-  }
-  const newExp = await setProjectIdAsync(projectDir, options);
-
-  const newLocalProjectId = newExp?.extra?.eas?.projectId;
-  if (!newLocalProjectId) {
-    // throw if we still can't locate the projectId
-    throw new Error('Could not retrieve project ID from app.json');
-  }
-  return newLocalProjectId;
-}
-
-const toAppPrivacy = (privacy: ExpoConfig['privacy']): AppPrivacy => {
-  if (privacy === 'public') {
-    return AppPrivacy.Public;
-  } else if (privacy === 'hidden') {
-    return AppPrivacy.Hidden;
-  } else {
-    return AppPrivacy.Unlisted;
-  }
-};
-
-export async function getProjectFullNameAsync(exp: ExpoConfig): Promise<string> {
-  const accountName = await getProjectAccountNameAsync(exp);
-  return `@${accountName}/${exp.slug}`;
 }
 
 /**
@@ -194,36 +52,24 @@ export function getProjectConfigDescription(projectDir: string): string {
   return 'app.config.js/app.json';
 }
 
-// return project id of existing/newly created project, or null if user declines
-export async function promptToCreateProjectIfNotExistsAsync(
-  exp: ExpoConfig
-): Promise<string | null> {
-  const accountName = getProjectAccountName(exp, await ensureLoggedInAsync());
-  const maybeProjectId = await findProjectIdByAccountNameAndSlugNullableAsync(
-    accountName,
-    exp.slug
-  );
-  if (maybeProjectId) {
-    return maybeProjectId;
-  }
-  const fullName = await getProjectFullNameAsync(exp);
-  const shouldCreateProject = await confirmAsync({
-    message: `Looks like ${fullName} is new. Register it with EAS?`,
-  });
-  if (!shouldCreateProject) {
-    return null;
-  }
-  const privacy = toAppPrivacy(exp.privacy);
-  return await ensureProjectExistsAsync({
-    accountName,
-    projectName: exp.slug,
-    privacy,
-  });
-}
-
 export function isExpoUpdatesInstalled(projectDir: string): boolean {
   const packageJson = getPackageJson(projectDir);
   return !!(packageJson.dependencies && 'expo-updates' in packageJson.dependencies);
+}
+
+export function isExpoNotificationsInstalled(projectDir: string): boolean {
+  const packageJson = getPackageJson(projectDir);
+  return !!(packageJson.dependencies && 'expo-notifications' in packageJson.dependencies);
+}
+
+export function isExpoInstalled(projectDir: string): boolean {
+  const packageJson = getPackageJson(projectDir);
+  return !!(packageJson.dependencies && 'expo' in packageJson.dependencies);
+}
+
+export function isExpoUpdatesInstalledAsDevDependency(projectDir: string): boolean {
+  const packageJson = getPackageJson(projectDir);
+  return !!(packageJson.devDependencies && 'expo-updates' in packageJson.devDependencies);
 }
 
 export function isExpoUpdatesInstalledOrAvailable(
@@ -238,10 +84,105 @@ export function isExpoUpdatesInstalledOrAvailable(
   return isExpoUpdatesInstalled(projectDir);
 }
 
-export async function installExpoUpdatesAsync(projectDir: string): Promise<void> {
-  Log.newLine();
-  Log.log(`Running ${chalk.bold('expo install expo-updates')}`);
-  Log.newLine();
-  await expoCommandAsync(projectDir, ['install', 'expo-updates']);
-  Log.newLine();
+export function isUsingEASUpdate(exp: ExpoConfig, projectId: string): boolean {
+  return exp.updates?.url === getEASUpdateURL(projectId);
+}
+
+async function getExpoUpdatesPackageVersionIfInstalledAsync(
+  projectDir: string
+): Promise<string | null> {
+  const maybePackageJson = resolveFrom.silent(projectDir, 'expo-updates/package.json');
+  if (!maybePackageJson) {
+    return null;
+  }
+  const { version } = await fs.readJson(maybePackageJson);
+  return version ?? null;
+}
+
+export async function validateAppVersionRuntimePolicySupportAsync(
+  projectDir: string,
+  exp: ExpoConfig
+): Promise<void> {
+  if (typeof exp.runtimeVersion !== 'object' || exp.runtimeVersion?.policy !== 'appVersion') {
+    return;
+  }
+
+  const expoUpdatesPackageVersion = await getExpoUpdatesPackageVersionIfInstalledAsync(projectDir);
+  if (
+    expoUpdatesPackageVersion !== null &&
+    (semver.gte(expoUpdatesPackageVersion, '0.14.4') ||
+      expoUpdatesPackageVersion.includes('canary'))
+  ) {
+    return;
+  }
+
+  Log.warn(
+    `You need to be on SDK 46 or higher, and use expo-updates >= 0.14.4 to use appVersion runtime policy.`
+  );
+}
+
+export async function enforceRollBackToEmbeddedUpdateSupportAsync(
+  projectDir: string
+): Promise<void> {
+  const expoUpdatesPackageVersion = await getExpoUpdatesPackageVersionIfInstalledAsync(projectDir);
+  if (
+    expoUpdatesPackageVersion !== null &&
+    (semver.gte(expoUpdatesPackageVersion, '0.19.0') ||
+      expoUpdatesPackageVersion.includes('canary'))
+  ) {
+    return;
+  }
+
+  throw new Error(
+    `The expo-updates package must have a version >= 0.19.0 to use roll back to embedded, which corresponds to Expo SDK 50 or greater. ${learnMore(
+      'https://docs.expo.dev/workflow/upgrading-expo-sdk-walkthrough/'
+    )}`
+  );
+}
+
+export async function isModernExpoUpdatesCLIWithRuntimeVersionCommandSupportedAsync(
+  projectDir: string
+): Promise<boolean> {
+  const expoUpdatesPackageVersion = await getExpoUpdatesPackageVersionIfInstalledAsync(projectDir);
+  if (expoUpdatesPackageVersion === null) {
+    return false;
+  }
+
+  if (expoUpdatesPackageVersion.includes('canary')) {
+    return true;
+  }
+
+  // Anything SDK 51 or greater uses the expo-updates CLI
+  return semver.gte(expoUpdatesPackageVersion, '0.25.4');
+}
+
+export async function installExpoUpdatesAsync(
+  projectDir: string,
+  options?: { silent: boolean }
+): Promise<void> {
+  Log.log(chalk.gray`> npx expo install expo-updates`);
+  try {
+    await expoCommandAsync(projectDir, ['install', 'expo-updates'], { silent: options?.silent });
+  } catch (error: any) {
+    if (options?.silent) {
+      Log.error('stdout' in error ? error.stdout : error.message);
+    }
+    throw error;
+  }
+}
+
+export async function getOwnerAccountForProjectIdAsync(
+  graphqlClient: ExpoGraphqlClient,
+  projectId: string
+): Promise<AccountFragment> {
+  const app = await AppQuery.byIdAsync(graphqlClient, projectId);
+  return app.ownerAccount;
+}
+
+export async function getDisplayNameForProjectIdAsync(
+  graphqlClient: ExpoGraphqlClient,
+  projectId: string
+): Promise<string> {
+  const app = await AppQuery.byIdAsync(graphqlClient, projectId);
+  return app.fullName;
 }

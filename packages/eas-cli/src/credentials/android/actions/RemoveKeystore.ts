@@ -1,14 +1,14 @@
 import chalk from 'chalk';
 
+import { BackupKeystore } from './DownloadKeystore';
 import { AndroidAppBuildCredentialsFragment } from '../../../graphql/generated';
 import Log from '../../../log';
 import { confirmAsync } from '../../../prompts';
 import { CredentialsContext } from '../../context';
 import { AppLookupParams } from '../api/GraphqlClient';
-import { BackupKeystore } from './DownloadKeystore';
 
 export class RemoveKeystore {
-  constructor(private app: AppLookupParams) {}
+  constructor(private readonly app: AppLookupParams) {}
 
   async runAsync(
     ctx: CredentialsContext,
@@ -37,7 +37,7 @@ export class RemoveKeystore {
     }
     await new BackupKeystore(this.app).runAsync(ctx, buildCredentials);
 
-    await ctx.android.deleteKeystoreAsync(keystore);
+    await ctx.android.deleteKeystoreAsync(ctx.graphqlClient, keystore);
     Log.succeed('Keystore removed');
   }
 
@@ -54,7 +54,7 @@ export class RemoveKeystore {
       )
     );
     Log.warn(
-      'Please read https://docs.expo.dev/distribution/building-standalone-apps/#if-you-choose-to-build-for-android for more info before proceeding.'
+      'Read https://docs.expo.dev/distribution/building-standalone-apps/#if-you-choose-to-build-for-android for more info before proceeding.'
     );
     Log.newLine();
     Log.warn(

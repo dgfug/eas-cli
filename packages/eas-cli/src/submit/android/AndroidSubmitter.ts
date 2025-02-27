@@ -1,7 +1,12 @@
 import { Platform } from '@expo/eas-build-job';
 import chalk from 'chalk';
 
-import { SubmissionEvent } from '../../analytics/events';
+import {
+  ServiceAccountKeyResult,
+  ServiceAccountSource,
+  getServiceAccountKeyResultAsync,
+} from './ServiceAccountSource';
+import { SubmissionEvent } from '../../analytics/AnalyticsManager';
 import {
   AndroidSubmissionConfigInput,
   SubmissionAndroidReleaseStatus,
@@ -10,7 +15,7 @@ import {
 } from '../../graphql/generated';
 import { SubmissionMutation } from '../../graphql/mutations/SubmissionMutation';
 import formatFields from '../../utils/formatFields';
-import { Archive, ArchiveSource, getArchiveAsync } from '../ArchiveSource';
+import { ArchiveSource, ResolvedArchiveSource } from '../ArchiveSource';
 import BaseSubmitter, { SubmissionInput } from '../BaseSubmitter';
 import { SubmissionContext } from '../context';
 import {
@@ -18,16 +23,11 @@ import {
   formatArchiveSourceSummary,
   printSummary,
 } from '../utils/summary';
-import {
-  ServiceAccountKeyResult,
-  ServiceAccountSource,
-  getServiceAccountKeyResultAsync,
-} from './ServiceAccountSource';
 
 export interface AndroidSubmissionOptions
   extends Pick<
     AndroidSubmissionConfigInput,
-    'track' | 'releaseStatus' | 'changesNotSentForReview'
+    'track' | 'releaseStatus' | 'changesNotSentForReview' | 'rollout'
   > {
   projectId: string;
   archiveSource: ArchiveSource;
@@ -35,7 +35,7 @@ export interface AndroidSubmissionOptions
 }
 
 interface ResolvedSourceOptions {
-  archive: Archive;
+  archive: ResolvedArchiveSource;
   serviceAccountKeyResult: ServiceAccountKeyResult;
 }
 
@@ -44,10 +44,14 @@ export default class AndroidSubmitter extends BaseSubmitter<
   ResolvedSourceOptions,
   AndroidSubmissionOptions
 > {
-  constructor(ctx: SubmissionContext<Platform.ANDROID>, options: AndroidSubmissionOptions) {
+  constructor(
+    ctx: SubmissionContext<Platform.ANDROID>,
+    options: AndroidSubmissionOptions,
+    archive: ResolvedArchiveSource
+  ) {
     const sourceOptionsResolver = {
       // eslint-disable-next-line async-protect/async-suffix
-      archive: async () => await getArchiveAsync(this.options.archiveSource),
+      archive: async () => archive,
       // eslint-disable-next-line async-protect/async-suffix
       serviceAccountKeyResult: async () => {
         return await getServiceAccountKeyResultAsync(this.ctx, this.options.serviceAccountSource);
@@ -71,7 +75,7 @@ export default class AndroidSubmitter extends BaseSubmitter<
   public async createSubmissionInputAsync(
     resolvedSourceOptions: ResolvedSourceOptions
   ): Promise<SubmissionInput<Platform.ANDROID>> {
-    const submissionConfig = await this.formatSubmissionConfig(this.options, resolvedSourceOptions);
+    const submissionConfig = this.formatSubmissionConfig(this.options, resolvedSourceOptions);
 
     printSummary(
       this.prepareSummaryData(this.options, resolvedSourceOptions),
@@ -80,7 +84,7 @@ export default class AndroidSubmitter extends BaseSubmitter<
     return {
       projectId: this.options.projectId,
       submissionConfig,
-      buildId: resolvedSourceOptions.archive.build?.id,
+      ...this.formatArchive(resolvedSourceOptions.archive),
     };
   }
 
@@ -88,24 +92,27 @@ export default class AndroidSubmitter extends BaseSubmitter<
     projectId,
     submissionConfig,
     buildId,
+    archiveSource,
   }: SubmissionInput<Platform.ANDROID>): Promise<SubmissionFragment> {
-    return await SubmissionMutation.createAndroidSubmissionAsync({
+    return await SubmissionMutation.createAndroidSubmissionAsync(this.ctx.graphqlClient, {
       appId: projectId,
       config: submissionConfig,
       submittedBuildId: buildId,
+      archiveSource,
     });
   }
 
   private formatSubmissionConfig(
     options: AndroidSubmissionOptions,
-    { archive, serviceAccountKeyResult }: ResolvedSourceOptions
+    { serviceAccountKeyResult }: ResolvedSourceOptions
   ): AndroidSubmissionConfigInput {
-    const { track, releaseStatus, changesNotSentForReview } = options;
+    const { track, releaseStatus, changesNotSentForReview, rollout } = options;
     return {
-      archiveUrl: archive.url,
       track,
       changesNotSentForReview,
       releaseStatus,
+      rollout,
+      isVerboseFastlaneEnabled: this.ctx.isVerboseFastlaneEnabled,
       ...serviceAccountKeyResult.result,
     };
   }
@@ -114,7 +121,7 @@ export default class AndroidSubmitter extends BaseSubmitter<
     options: AndroidSubmissionOptions,
     { archive, serviceAccountKeyResult }: ResolvedSourceOptions
   ): SummaryData {
-    const { projectId, track, releaseStatus, changesNotSentForReview } = options;
+    const { projectId, track, releaseStatus, changesNotSentForReview, rollout } = options;
 
     // structuring order affects table rows order
     return {
@@ -123,6 +130,7 @@ export default class AndroidSubmitter extends BaseSubmitter<
       changesNotSentForReview: changesNotSentForReview ?? undefined,
       releaseStatus: releaseStatus ?? undefined,
       formattedServiceAccount: formatServiceAccountSummary(serviceAccountKeyResult),
+      rollout: rollout ?? undefined,
       ...formatArchiveSourceSummary(archive),
     };
   }
@@ -133,6 +141,7 @@ type SummaryData = {
   formattedServiceAccount: string;
   projectId: string;
   releaseStatus?: SubmissionAndroidReleaseStatus;
+  rollout?: number;
   track: SubmissionAndroidTrack;
 } & ArchiveSourceSummaryFields;
 
@@ -144,6 +153,7 @@ const SummaryHumanReadableKeys: Record<keyof SummaryData, string> = {
   formattedServiceAccount: 'Google Service Account Key',
   projectId: 'Project ID',
   releaseStatus: 'Release status',
+  rollout: 'Rollout',
   track: 'Release track',
 };
 
@@ -164,7 +174,7 @@ function formatServiceAccountSummary({ summary }: ServiceAccountKeyResult): stri
       value: serviceAccountKeyPath,
     },
     {
-      label: 'Account E-mail',
+      label: 'Account Email',
       value: serviceAccountEmail,
     },
   ];

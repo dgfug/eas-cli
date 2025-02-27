@@ -1,10 +1,11 @@
-import { getConfig } from '@expo/config';
 import { Flags } from '@oclif/core';
 import chalk from 'chalk';
 import gql from 'graphql-tag';
 
 import EasCommand from '../../commandUtils/EasCommand';
-import { graphqlClient, withErrorHandlingAsync } from '../../graphql/client';
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
+import { EasNonInteractiveAndJsonFlags } from '../../commandUtils/flags';
+import { withErrorHandlingAsync } from '../../graphql/client';
 import {
   EditUpdateBranchInput,
   EditUpdateBranchMutation,
@@ -12,19 +13,14 @@ import {
   UpdateBranch,
 } from '../../graphql/generated';
 import Log from '../../log';
-import {
-  findProjectRootAsync,
-  getProjectFullNameAsync,
-  getProjectIdAsync,
-} from '../../project/projectUtils';
+import { getDisplayNameForProjectIdAsync } from '../../project/projectUtils';
 import { promptAsync } from '../../prompts';
 import { enableJsonOutput, printJsonOnlyOutput } from '../../utils/json';
 
-async function renameUpdateBranchOnAppAsync({
-  appId,
-  name,
-  newName,
-}: EditUpdateBranchInput): Promise<Pick<UpdateBranch, 'id' | 'name'>> {
+async function renameUpdateBranchOnAppAsync(
+  graphqlClient: ExpoGraphqlClient,
+  { appId, name, newName }: EditUpdateBranchInput
+): Promise<Pick<UpdateBranch, 'id' | 'name'>> {
   const data = await withErrorHandlingAsync(
     graphqlClient
       .mutation<EditUpdateBranchMutation, EditUpdateBranchMutationVariables>(
@@ -52,9 +48,9 @@ async function renameUpdateBranchOnAppAsync({
 }
 
 export default class BranchRename extends EasCommand {
-  static description = 'rename a branch';
+  static override description = 'rename a branch';
 
-  static flags = {
+  static override flags = {
     from: Flags.string({
       description: 'current name of the branch.',
       required: false,
@@ -63,52 +59,57 @@ export default class BranchRename extends EasCommand {
       description: 'new name of the branch.',
       required: false,
     }),
-    json: Flags.boolean({
-      description: `return a json with the edited branch's ID and name.`,
-      default: false,
-    }),
+    ...EasNonInteractiveAndJsonFlags,
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectId,
+    ...this.ContextOptions.LoggedIn,
   };
 
   async runAsync(): Promise<void> {
     let {
-      flags: { json: jsonFlag, from: currentName, to: newName },
+      flags: { json: jsonFlag, from: currentName, to: newName, 'non-interactive': nonInteractive },
     } = await this.parse(BranchRename);
+    const {
+      projectId,
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(BranchRename, {
+      nonInteractive,
+    });
     if (jsonFlag) {
       enableJsonOutput();
     }
 
-    const projectDir = await findProjectRootAsync();
-    const { exp } = getConfig(projectDir, { skipSDKVersionRequirement: true });
-    const fullName = await getProjectFullNameAsync(exp);
-    const projectId = await getProjectIdAsync(exp);
+    const projectDisplayName = await getDisplayNameForProjectIdAsync(graphqlClient, projectId);
 
     if (!currentName) {
       const validationMessage = 'current name may not be empty.';
-      if (jsonFlag) {
+      if (nonInteractive) {
         throw new Error(validationMessage);
       }
       ({ currentName } = await promptAsync({
         type: 'text',
         name: 'currentName',
-        message: 'Please enter the current name of the branch to rename:',
+        message: "Provide the name of the branch you'd like to rename:",
         validate: value => (value ? true : validationMessage),
       }));
     }
 
     if (!newName) {
       const validationMessage = 'new name may not be empty.';
-      if (jsonFlag) {
+      if (nonInteractive) {
         throw new Error(validationMessage);
       }
       ({ newName } = await promptAsync({
         type: 'text',
         name: 'newName',
-        message: `Please rename ${currentName}`,
+        message: `Rename ${currentName}`,
         validate: value => (value ? true : validationMessage),
       }));
     }
 
-    const editedBranch = await renameUpdateBranchOnAppAsync({
+    const editedBranch = await renameUpdateBranchOnAppAsync(graphqlClient, {
       appId: projectId,
       name: currentName!,
       newName: newName!,
@@ -120,7 +121,7 @@ export default class BranchRename extends EasCommand {
       Log.withTick(
         `️Renamed branch from ${currentName} to ${chalk.bold(
           editedBranch.name
-        )} on project ${chalk.bold(fullName)}.`
+        )} on project ${chalk.bold(projectDisplayName)}.`
       );
     }
   }

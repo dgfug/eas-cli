@@ -11,9 +11,12 @@ export default class NoVcsClient extends Client {
     await makeShallowCopyAsync(srcPath, destinationPath);
   }
 
-  public async isFileIgnoredAsync(filePath: string): Promise<boolean> {
-    const ignore = new Ignore(getRootPath());
-    await ignore.initIgnoreAsync();
+  public override async isFileIgnoredAsync(filePath: string): Promise<boolean> {
+    const ignore = await Ignore.createAsync(getRootPath());
     return ignore.ignores(filePath);
+  }
+
+  public override canGetLastCommitMessage(): boolean {
+    return false;
   }
 }

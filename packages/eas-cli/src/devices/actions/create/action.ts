@@ -1,30 +1,46 @@
 import chalk from 'chalk';
 
-import { AppleTeam } from '../../../graphql/generated';
-import Log from '../../../log';
-import { promptAsync } from '../../../prompts';
-import { Account } from '../../../user/Account';
+import { runCurrentMachineMethodAsync } from './currentMachineMethod';
+import { runDeveloperPortalMethodAsync } from './developerPortalMethod';
 import { runInputMethodAsync } from './inputMethod';
 import { runRegistrationUrlMethodAsync } from './registrationUrlMethod';
+import { ExpoGraphqlClient } from '../../../commandUtils/context/contextUtils/createGraphqlClient';
+import AppStoreApi from '../../../credentials/ios/appstore/AppStoreApi';
+import { AccountFragment, AppleTeam } from '../../../graphql/generated';
+import Log from '../../../log';
+import { promptAsync } from '../../../prompts';
 
 export enum RegistrationMethod {
   WEBSITE,
   INPUT,
+  DEVELOPER_PORTAL,
+  CURRENT_MACHINE,
   EXIT,
 }
 
 export default class DeviceCreateAction {
   constructor(
-    private account: Account,
-    private appleTeam: Pick<AppleTeam, 'appleTeamIdentifier' | 'appleTeamName' | 'id'>
+    private readonly graphqlClient: ExpoGraphqlClient,
+    private readonly appStoreApi: AppStoreApi,
+    private readonly account: AccountFragment,
+    private readonly appleTeam: Pick<AppleTeam, 'appleTeamIdentifier' | 'appleTeamName' | 'id'>
   ) {}
 
   public async runAsync(): Promise<RegistrationMethod> {
     const method = await this.askForRegistrationMethodAsync();
     if (method === RegistrationMethod.WEBSITE) {
-      await runRegistrationUrlMethodAsync(this.account.id, this.appleTeam);
+      await runRegistrationUrlMethodAsync(this.graphqlClient, this.account.id, this.appleTeam);
+    } else if (method === RegistrationMethod.DEVELOPER_PORTAL) {
+      await runDeveloperPortalMethodAsync(
+        this.graphqlClient,
+        this.appStoreApi,
+        this.account,
+        this.appleTeam
+      );
     } else if (method === RegistrationMethod.INPUT) {
-      await runInputMethodAsync(this.account.id, this.appleTeam);
+      await runInputMethodAsync(this.graphqlClient, this.account.id, this.appleTeam);
+    } else if (method === RegistrationMethod.CURRENT_MACHINE) {
+      await runCurrentMachineMethodAsync(this.graphqlClient, this.account.id, this.appleTeam);
     } else if (method === RegistrationMethod.EXIT) {
       Log.log('Bye!');
       process.exit(0);
@@ -45,8 +61,20 @@ export default class DeviceCreateAction {
           value: RegistrationMethod.WEBSITE,
         },
         {
+          title: `${chalk.bold(
+            'Developer Portal'
+          )} - import devices already registered on Apple Developer Portal`,
+          value: RegistrationMethod.DEVELOPER_PORTAL,
+        },
+        {
           title: `${chalk.bold('Input')} - allows you to type in UDIDs (advanced option)`,
           value: RegistrationMethod.INPUT,
+        },
+        {
+          title: `${chalk.bold(
+            'Current Machine'
+          )} - automatically sets the provisioning UDID of the current Apple Silicon machine`,
+          value: RegistrationMethod.CURRENT_MACHINE,
         },
         { title: chalk.bold('Exit'), value: RegistrationMethod.EXIT },
       ],
