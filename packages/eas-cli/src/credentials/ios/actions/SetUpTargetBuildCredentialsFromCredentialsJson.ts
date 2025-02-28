@@ -2,6 +2,12 @@ import chalk from 'chalk';
 import nullthrows from 'nullthrows';
 
 import {
+  assignBuildCredentialsAsync,
+  getBuildCredentialsAsync,
+  getDistributionCertificateAsync,
+  getProvisioningProfileAsync,
+} from './BuildCredentialsUtils';
+import {
   AppleDistributionCertificateFragment,
   AppleProvisioningProfileFragment,
   AppleTeamFragment,
@@ -12,21 +18,15 @@ import Log from '../../../log';
 import { confirmAsync } from '../../../prompts';
 import { CredentialsContext } from '../../context';
 import { IosTargetCredentials } from '../../credentialsJson/types';
-import { AppLookupParams } from '../api/GraphqlClient';
+import { AppLookupParams } from '../api/graphql/types/AppLookupParams';
 import { displayProjectCredentials } from '../utils/printCredentials';
 import { readAppleTeam } from '../utils/provisioningProfile';
-import {
-  assignBuildCredentialsAsync,
-  getBuildCredentialsAsync,
-  getDistributionCertificateAsync,
-  getProvisioningProfileAsync,
-} from './BuildCredentialsUtils';
 
 export class SetUpTargetBuildCredentialsFromCredentialsJson {
   constructor(
-    private app: AppLookupParams,
-    private distributionType: IosDistributionType,
-    private targetCredentials: IosTargetCredentials
+    private readonly app: AppLookupParams,
+    private readonly distributionType: IosDistributionType,
+    private readonly targetCredentials: IosTargetCredentials
   ) {}
 
   async runAsync(ctx: CredentialsContext): Promise<IosAppBuildCredentialsFragment> {
@@ -44,10 +44,14 @@ export class SetUpTargetBuildCredentialsFromCredentialsJson {
     const appleTeamFromProvisioningProfile = readAppleTeam(
       this.targetCredentials.provisioningProfile
     );
-    const appleTeam = await ctx.ios.createOrGetExistingAppleTeamAsync(this.app.account, {
-      appleTeamIdentifier: appleTeamFromProvisioningProfile.teamId,
-      appleTeamName: appleTeamFromProvisioningProfile.teamName,
-    });
+    const appleTeam = await ctx.ios.createOrGetExistingAppleTeamAsync(
+      ctx.graphqlClient,
+      this.app.account,
+      {
+        appleTeamIdentifier: appleTeamFromProvisioningProfile.teamId,
+        appleTeamName: appleTeamFromProvisioningProfile.teamName,
+      }
+    );
     const distributionCertificateToAssign = await this.getDistributionCertificateToAssignAsync(
       ctx,
       appleTeam,
@@ -109,7 +113,7 @@ export class SetUpTargetBuildCredentialsFromCredentialsJson {
     const { certificateP12, certificatePassword } = this.targetCredentials.distributionCertificate;
 
     if (!currentDistributionCertificate) {
-      return await ctx.ios.createDistributionCertificateAsync(this.app.account, {
+      return await ctx.ios.createDistributionCertificateAsync(ctx.graphqlClient, this.app.account, {
         certP12: certificateP12,
         certPassword: certificatePassword,
         teamId: appleTeam.appleTeamIdentifier,
@@ -119,7 +123,7 @@ export class SetUpTargetBuildCredentialsFromCredentialsJson {
 
     const isSameCertificate = currentDistributionCertificate.certificateP12 === certificateP12;
     if (!isSameCertificate) {
-      return await ctx.ios.createDistributionCertificateAsync(this.app.account, {
+      return await ctx.ios.createDistributionCertificateAsync(ctx.graphqlClient, this.app.account, {
         certP12: certificateP12,
         certPassword: certificatePassword,
         teamId: appleTeam.appleTeamIdentifier,
@@ -158,12 +162,18 @@ export class SetUpTargetBuildCredentialsFromCredentialsJson {
     const { provisioningProfile } = this.targetCredentials;
 
     const appleAppIdentifier = await ctx.ios.createOrGetExistingAppleAppIdentifierAsync(
+      ctx.graphqlClient,
       this.app,
       appleTeam
     );
-    return await ctx.ios.createProvisioningProfileAsync(this.app, appleAppIdentifier, {
-      appleProvisioningProfile: provisioningProfile,
-    });
+    return await ctx.ios.createProvisioningProfileAsync(
+      ctx.graphqlClient,
+      this.app,
+      appleAppIdentifier,
+      {
+        appleProvisioningProfile: provisioningProfile,
+      }
+    );
   }
 }
 

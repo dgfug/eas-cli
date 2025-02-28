@@ -1,14 +1,21 @@
 import { Platform } from '@expo/eas-build-job';
 import { AndroidReleaseStatus, AndroidReleaseTrack } from '@expo/eas-json';
 import { vol } from 'memfs';
+import { instance, mock } from 'ts-mockito';
 import { v4 as uuidv4 } from 'uuid';
 
-import { asMock } from '../../../__tests__/utils';
+import { Analytics } from '../../../analytics/AnalyticsManager';
+import { ExpoGraphqlClient } from '../../../commandUtils/context/contextUtils/createGraphqlClient';
 import { testAndroidAppCredentialsFragment } from '../../../credentials/__tests__/fixtures-android';
-import { jester as mockJester } from '../../../credentials/__tests__/fixtures-constants';
-import { SetUpGoogleServiceAccountKey } from '../../../credentials/android/actions/SetUpGoogleServiceAccountKey';
+import {
+  jester as mockJester,
+  testProjectId,
+} from '../../../credentials/__tests__/fixtures-constants';
+import { SetUpGoogleServiceAccountKeyForSubmissions } from '../../../credentials/android/actions/SetUpGoogleServiceAccountKeyForSubmissions';
 import { createTestProject } from '../../../project/__tests__/project-utils';
+import { getOwnerAccountForProjectIdAsync } from '../../../project/projectUtils';
 import { promptAsync } from '../../../prompts';
+import { resolveVcsClient } from '../../../vcs';
 import { createSubmissionContextAsync } from '../../context';
 import {
   ServiceAccountSource,
@@ -20,22 +27,16 @@ import {
 jest.mock('fs');
 jest.mock('../../../prompts');
 jest.mock('../../../project/projectUtils');
-jest.mock('../../../credentials/android/actions/SetUpGoogleServiceAccountKey');
+jest.mock('../../../credentials/android/actions/SetUpGoogleServiceAccountKeyForSubmissions');
 jest.mock('../../../user/User', () => ({
   getUserAsync: jest.fn(() => mockJester),
 }));
-jest.mock('../../../user/Account', () => ({
-  findAccountByName: jest.fn(() => mockJester.accounts[0]),
-}));
-const testProject = createTestProject(mockJester, {
+
+const testProject = createTestProject(testProjectId, mockJester.accounts[0].name, {
   android: {
     package: 'com.expo.test.project',
   },
 });
-const mockManifest = { exp: testProject.appJSON.expo };
-jest.mock('@expo/config', () => ({
-  getConfig: jest.fn(() => mockManifest),
-}));
 
 const projectId = uuidv4();
 const mockDetectableServiceAccountJson = JSON.stringify({
@@ -43,6 +44,8 @@ const mockDetectableServiceAccountJson = JSON.stringify({
   private_key: 'super secret',
   client_email: 'beep-boop@iam.gserviceaccount.com',
 });
+
+const vcsClient = resolveVcsClient();
 
 beforeAll(() => {
   vol.fromJSON({
@@ -52,22 +55,26 @@ beforeAll(() => {
     '/other_dir/invalid_file.txt': 'this is not even a JSON',
   });
   jest
-    .spyOn(SetUpGoogleServiceAccountKey.prototype, 'runAsync')
+    .spyOn(SetUpGoogleServiceAccountKeyForSubmissions.prototype, 'runAsync')
     .mockImplementation(async () => testAndroidAppCredentialsFragment);
 });
 afterAll(() => {
   vol.reset();
 });
 
+beforeEach(() => {
+  jest.mocked(getOwnerAccountForProjectIdAsync).mockResolvedValue(mockJester.accounts[0]);
+});
+
 afterEach(() => {
-  asMock(promptAsync).mockClear();
+  jest.mocked(promptAsync).mockClear();
   jest.restoreAllMocks();
 });
 
 describe(getServiceAccountKeyPathAsync, () => {
   describe('when source is ServiceAccountSourceType.path', () => {
     it("prompts for path if the provided file doesn't exist", async () => {
-      asMock(promptAsync).mockImplementationOnce(() => ({
+      jest.mocked(promptAsync).mockImplementationOnce(async () => ({
         filePath: '/google-service-account.json',
       }));
       const source: ServiceAccountSource = {
@@ -100,7 +107,7 @@ describe(getServiceAccountKeyPathAsync, () => {
 
   describe('when source is ServiceAccountSourceType.prompt', () => {
     it('prompts for path', async () => {
-      asMock(promptAsync).mockImplementationOnce(() => ({
+      jest.mocked(promptAsync).mockImplementationOnce(async () => ({
         filePath: '/google-service-account.json',
       }));
       const source: ServiceAccountSource = {
@@ -112,14 +119,15 @@ describe(getServiceAccountKeyPathAsync, () => {
     });
 
     it('prompts for path until the user provides an existing file', async () => {
-      asMock(promptAsync)
-        .mockImplementationOnce(() => ({
+      jest
+        .mocked(promptAsync)
+        .mockImplementationOnce(async () => ({
           filePath: '/doesnt-exist.json',
         }))
-        .mockImplementationOnce(() => ({
+        .mockImplementationOnce(async () => ({
           filePath: '/googl-service-account.json',
         }))
-        .mockImplementationOnce(() => ({
+        .mockImplementationOnce(async () => ({
           filePath: '/google-service-account.json',
         }));
       const source: ServiceAccountSource = {
@@ -134,10 +142,11 @@ describe(getServiceAccountKeyPathAsync, () => {
 
 describe(getServiceAccountKeyResultAsync, () => {
   it('returns a local Service Account Key file with a ServiceAccountSourceType.path source', async () => {
+    const graphqlClient = instance(mock<ExpoGraphqlClient>());
+    const analytics = instance(mock<Analytics>());
     const ctx = await createSubmissionContextAsync({
       platform: Platform.ANDROID,
       projectDir: testProject.projectRoot,
-      projectId,
       archiveFlags: {
         url: 'http://expo.dev/fake.apk',
       },
@@ -147,6 +156,13 @@ describe(getServiceAccountKeyResultAsync, () => {
         changesNotSentForReview: false,
       },
       nonInteractive: true,
+      isVerboseFastlaneEnabled: false,
+      actor: mockJester,
+      graphqlClient,
+      analytics,
+      exp: testProject.appJSON.expo,
+      projectId,
+      vcsClient,
     });
     const source: ServiceAccountSource = {
       sourceType: ServiceAccountSourceType.path,
@@ -166,13 +182,14 @@ describe(getServiceAccountKeyResultAsync, () => {
   });
 
   it('returns a local Service Account Key file with a ServiceAccountSourceType.prompt source', async () => {
-    asMock(promptAsync).mockImplementationOnce(() => ({
+    jest.mocked(promptAsync).mockImplementationOnce(async () => ({
       filePath: '/project_dir/subdir/service-account.json',
     }));
+    const graphqlClient = instance(mock<ExpoGraphqlClient>());
+    const analytics = instance(mock<Analytics>());
     const ctx = await createSubmissionContextAsync({
       platform: Platform.ANDROID,
       projectDir: testProject.projectRoot,
-      projectId,
       archiveFlags: {
         url: 'http://expo.dev/fake.apk',
       },
@@ -182,6 +199,13 @@ describe(getServiceAccountKeyResultAsync, () => {
         changesNotSentForReview: false,
       },
       nonInteractive: true,
+      isVerboseFastlaneEnabled: false,
+      actor: mockJester,
+      graphqlClient,
+      analytics,
+      exp: testProject.appJSON.expo,
+      projectId,
+      vcsClient,
     });
     const source: ServiceAccountSource = {
       sourceType: ServiceAccountSourceType.prompt,
@@ -200,10 +224,11 @@ describe(getServiceAccountKeyResultAsync, () => {
   });
 
   it('returns a remote Service Account Key file with a ServiceAccountSourceType.credentialService source', async () => {
+    const graphqlClient = instance(mock<ExpoGraphqlClient>());
+    const analytics = instance(mock<Analytics>());
     const ctx = await createSubmissionContextAsync({
       platform: Platform.ANDROID,
       projectDir: testProject.projectRoot,
-      projectId,
       archiveFlags: {
         url: 'http://expo.dev/fake.apk',
       },
@@ -213,6 +238,13 @@ describe(getServiceAccountKeyResultAsync, () => {
         changesNotSentForReview: false,
       },
       nonInteractive: true,
+      isVerboseFastlaneEnabled: false,
+      actor: mockJester,
+      graphqlClient,
+      analytics,
+      exp: testProject.appJSON.expo,
+      projectId,
+      vcsClient,
     });
     const serviceAccountResult = await getServiceAccountKeyResultAsync(ctx, {
       sourceType: ServiceAccountSourceType.credentialsService,

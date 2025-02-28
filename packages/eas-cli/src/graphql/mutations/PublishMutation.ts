@@ -1,21 +1,32 @@
+import { print } from 'graphql';
 import gql from 'graphql-tag';
 
-import { graphqlClient, withErrorHandlingAsync } from '../client';
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
+import { withErrorHandlingAsync } from '../client';
 import {
   CodeSigningInfoInput,
+  GetSignedUploadMutation,
+  GetSignedUploadMutationVariables,
   PublishUpdateGroupInput,
   SetCodeSigningInfoMutation,
+  SetCodeSigningInfoMutationVariables,
+  SetRolloutPercentageMutation,
+  SetRolloutPercentageMutationVariables,
+  UpdateFragment,
   UpdatePublishMutation,
 } from '../generated';
+import { UpdateFragmentNode } from '../types/Update';
+
+const turtleJobRunId = process.env.EAS_BUILD_ID;
 
 export const PublishMutation = {
-  async getUploadURLsAsync(contentTypes: string[]): Promise<{ specifications: string[] }> {
+  async getUploadURLsAsync(
+    graphqlClient: ExpoGraphqlClient,
+    contentTypes: string[]
+  ): Promise<GetSignedUploadMutation['asset']['getSignedAssetUploadSpecifications']> {
     const data = await withErrorHandlingAsync(
       graphqlClient
-        .mutation<
-          { asset: { getSignedAssetUploadSpecifications: { specifications: string[] } } },
-          { contentTypes: string[] }
-        >(
+        .mutation<GetSignedUploadMutation, GetSignedUploadMutationVariables>(
           gql`
             mutation GetSignedUploadMutation($contentTypes: [String!]!) {
               asset {
@@ -33,10 +44,10 @@ export const PublishMutation = {
     );
     return data.asset.getSignedAssetUploadSpecifications;
   },
-
   async publishUpdateGroupAsync(
+    graphqlClient: ExpoGraphqlClient,
     publishUpdateGroupsInput: PublishUpdateGroupInput[]
-  ): Promise<UpdatePublishMutation['updateBranch']['publishUpdateGroups']> {
+  ): Promise<UpdateFragment[]> {
     const data = await withErrorHandlingAsync(
       graphqlClient
         .mutation<UpdatePublishMutation>(
@@ -45,15 +56,18 @@ export const PublishMutation = {
               updateBranch {
                 publishUpdateGroups(publishUpdateGroupsInput: $publishUpdateGroupsInput) {
                   id
-                  group
-                  runtimeVersion
-                  platform
-                  manifestPermalink
+                  ...UpdateFragment
                 }
               }
             }
+            ${print(UpdateFragmentNode)}
           `,
-          { publishUpdateGroupsInput }
+          {
+            publishUpdateGroupsInput: publishUpdateGroupsInput.map(input => ({
+              ...input,
+              turtleJobRunId,
+            })),
+          }
         )
         .toPromise()
     );
@@ -61,12 +75,13 @@ export const PublishMutation = {
   },
 
   async setCodeSigningInfoAsync(
+    graphqlClient: ExpoGraphqlClient,
     updateId: string,
     codeSigningInfo: CodeSigningInfoInput
   ): Promise<SetCodeSigningInfoMutation['update']['setCodeSigningInfo']> {
     const data = await withErrorHandlingAsync(
       graphqlClient
-        .mutation<SetCodeSigningInfoMutation>(
+        .mutation<SetCodeSigningInfoMutation, SetCodeSigningInfoMutationVariables>(
           gql`
             mutation SetCodeSigningInfoMutation(
               $updateId: ID!
@@ -91,5 +106,32 @@ export const PublishMutation = {
         .toPromise()
     );
     return data.update.setCodeSigningInfo;
+  },
+
+  async setRolloutPercentageAsync(
+    graphqlClient: ExpoGraphqlClient,
+    updateId: string,
+    rolloutPercentage: number
+  ): Promise<UpdateFragment> {
+    const data = await withErrorHandlingAsync(
+      graphqlClient
+        .mutation<SetRolloutPercentageMutation, SetRolloutPercentageMutationVariables>(
+          gql`
+            mutation SetRolloutPercentageMutation($updateId: ID!, $rolloutPercentage: Int!) {
+              update {
+                setRolloutPercentage(updateId: $updateId, percentage: $rolloutPercentage) {
+                  id
+                  ...UpdateFragment
+                }
+              }
+            }
+            ${print(UpdateFragmentNode)}
+          `,
+          { updateId, rolloutPercentage },
+          { additionalTypenames: ['Update'] }
+        )
+        .toPromise()
+    );
+    return data.update.setRolloutPercentage;
   },
 };

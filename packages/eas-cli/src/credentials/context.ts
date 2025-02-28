@@ -1,101 +1,105 @@
-import { ExpoConfig, getConfig } from '@expo/config';
+import { ExpoConfig } from '@expo/config';
 import { Env } from '@expo/eas-build-job';
+import { EasJson } from '@expo/eas-json';
 import chalk from 'chalk';
 
-import Log from '../log';
-import { getExpoConfig } from '../project/expoConfig';
-import { getProjectAccountName } from '../project/projectUtils';
-import { confirmAsync } from '../prompts';
-import { Actor, getActorDisplayName } from '../user/User';
 import * as AndroidGraphqlClient from './android/api/GraphqlClient';
 import * as IosGraphqlClient from './ios/api/GraphqlClient';
 import AppStoreApi from './ios/appstore/AppStoreApi';
+import { AuthenticationMode } from './ios/appstore/authenticateTypes';
+import { Analytics } from '../analytics/AnalyticsManager';
+import { ExpoGraphqlClient } from '../commandUtils/context/contextUtils/createGraphqlClient';
+import Log from '../log';
+import { getPrivateExpoConfigAsync } from '../project/expoConfig';
+import { confirmAsync } from '../prompts';
+import { Actor } from '../user/User';
+import { Client } from '../vcs/vcs';
+
+export type CredentialsContextProjectInfo = {
+  exp: ExpoConfig;
+  projectId: string;
+};
 
 export class CredentialsContext {
   public readonly android = AndroidGraphqlClient;
   public readonly appStore = new AppStoreApi();
   public readonly ios = IosGraphqlClient;
   public readonly nonInteractive: boolean;
+  public readonly freezeCredentials: boolean = false;
   public readonly projectDir: string;
   public readonly user: Actor;
+  public readonly graphqlClient: ExpoGraphqlClient;
+  public readonly analytics: Analytics;
+  public readonly vcsClient: Client;
+  public readonly easJsonCliConfig?: EasJson['cli'];
+  public readonly usesBroadcastPushNotifications: boolean;
 
   private shouldAskAuthenticateAppStore: boolean = true;
-  private resolvedExp?: ExpoConfig;
+
+  private readonly projectInfo: CredentialsContextProjectInfo | null;
 
   constructor(
-    private options: {
-      exp?: ExpoConfig;
-      nonInteractive?: boolean;
+    private readonly options: {
+      // if null, this implies not running in a project context
+      projectInfo: CredentialsContextProjectInfo | null;
+      easJsonCliConfig?: EasJson['cli'];
+      nonInteractive: boolean;
       projectDir: string;
       user: Actor;
+      graphqlClient: ExpoGraphqlClient;
+      analytics: Analytics;
+      vcsClient: Client;
+      freezeCredentials?: boolean;
       env?: Env;
     }
   ) {
+    this.easJsonCliConfig = options.easJsonCliConfig;
     this.projectDir = options.projectDir;
     this.user = options.user;
+    this.graphqlClient = options.graphqlClient;
+    this.analytics = options.analytics;
+    this.vcsClient = options.vcsClient;
     this.nonInteractive = options.nonInteractive ?? false;
-
-    this.resolvedExp = options.exp;
-    if (!this.resolvedExp) {
-      this.resolvedExp =
-        CredentialsContext.getExpoConfigInProject(this.projectDir, { env: options.env }) ??
-        undefined;
-    }
-  }
-
-  static getExpoConfigInProject(
-    projectDir: string,
-    { env }: { env?: Env } = {}
-  ): ExpoConfig | null {
-    try {
-      return getExpoConfig(projectDir, { env });
-    } catch (error) {
-      // ignore error, context might be created outside of expo project
-      return null;
-    }
+    this.projectInfo = options.projectInfo;
+    this.freezeCredentials = options.freezeCredentials ?? false;
+    this.usesBroadcastPushNotifications =
+      options.projectInfo?.exp.ios?.usesBroadcastPushNotifications ?? false;
   }
 
   get hasProjectContext(): boolean {
-    return !!this.resolvedExp;
+    return !!this.projectInfo;
   }
 
-  get exp(): ExpoConfig {
-    this.ensureProjectContext();
-    return this.resolvedExp!;
+  public async getExpoConfigAsync(): Promise<ExpoConfig> {
+    await this.ensureProjectContextAsync();
+    return this.projectInfo!.exp;
   }
 
-  public ensureProjectContext(): void {
+  public async getProjectIdAsync(): Promise<string> {
+    await this.ensureProjectContextAsync();
+    return this.projectInfo!.projectId;
+  }
+
+  public async ensureProjectContextAsync(): Promise<void> {
     if (this.hasProjectContext) {
       return;
     }
     // trigger getConfig error
-    getConfig(this.options.projectDir, { skipSDKVersionRequirement: true });
-  }
-
-  public logOwnerAndProject(): void {
-    const { user } = this.options;
-    if (this.hasProjectContext) {
-      const owner = getProjectAccountName(this.exp, user);
-      // Figure out if User A is configuring credentials as admin for User B's project
-      const isProxyUser = user.__typename === 'Robot' || owner !== user.username;
-
-      Log.log(
-        `Accessing credentials ${isProxyUser ? 'on behalf of' : 'for'} ${owner} in project ${
-          this.exp.slug
-        }`
-      );
-    } else {
-      Log.log(`Accessing credentials for ${this.exp.owner ?? getActorDisplayName(user)}`);
-    }
+    await getPrivateExpoConfigAsync(this.options.projectDir);
   }
 
   async bestEffortAppStoreAuthenticateAsync(): Promise<void> {
-    if (this.appStore.authCtx || !this.shouldAskAuthenticateAppStore) {
+    if (!!this.appStore.authCtx || !this.shouldAskAuthenticateAppStore) {
       // skip prompts if already have apple ctx or already asked about it
       return;
     }
 
     if (this.nonInteractive) {
+      return;
+    }
+
+    if (this.appStore.defaultAuthenticationMode === AuthenticationMode.API_KEY) {
+      await this.appStore.ensureAuthenticatedAsync();
       return;
     }
 

@@ -2,6 +2,15 @@ import assert from 'assert';
 import nullthrows from 'nullthrows';
 
 import {
+  AppStoreApiKeyPurpose,
+  formatAscApiKey,
+  getAscApiKeysFromAccountAsync,
+  selectAscApiKeysFromAccountAsync,
+  sortAscApiKeysByUpdatedAtDesc,
+} from './AscApiKeyUtils';
+import { AssignAscApiKey } from './AssignAscApiKey';
+import { CreateAscApiKey } from './CreateAscApiKey';
+import {
   AppStoreConnectApiKeyFragment,
   CommonIosAppCredentialsFragment,
 } from '../../../graphql/generated';
@@ -12,17 +21,8 @@ import {
   MissingCredentialsNonInteractiveError,
   UnsupportedCredentialsChoiceError,
 } from '../../errors';
-import { AppLookupParams } from '../api/GraphqlClient';
+import { AppLookupParams } from '../api/graphql/types/AppLookupParams';
 import { getValidAndTrackedAscApiKeysAsync } from '../validators/validateAscApiKey';
-import {
-  AppStoreApiKeyPurpose,
-  formatAscApiKey,
-  getAscApiKeysFromAccountAsync,
-  selectAscApiKeysFromAccountAsync,
-  sortAscApiKeysByUpdatedAtDesc,
-} from './AscApiKeyUtils';
-import { AssignAscApiKey } from './AssignAscApiKey';
-import { CreateAscApiKey } from './CreateAscApiKey';
 
 export enum SetupAscApiKeyChoice {
   GENERATE = 'GENERATE',
@@ -31,20 +31,23 @@ export enum SetupAscApiKeyChoice {
 export class SetUpAscApiKey {
   public choices: { title: string; value: string }[] = [
     {
-      title: '[Choose an existing ASC API Key]',
+      title: '[Choose an existing key]',
       value: SetupAscApiKeyChoice.USE_EXISTING,
     },
-    { title: '[Add a new ASC API Key]', value: SetupAscApiKeyChoice.GENERATE },
+    { title: '[Add a new key]', value: SetupAscApiKeyChoice.GENERATE },
   ];
 
-  constructor(private app: AppLookupParams, private purpose: AppStoreApiKeyPurpose) {}
+  constructor(
+    private readonly app: AppLookupParams,
+    private readonly purpose: AppStoreApiKeyPurpose
+  ) {}
 
   public async runAsync(ctx: CredentialsContext): Promise<CommonIosAppCredentialsFragment> {
     const isKeySetup = await this.isAscApiKeySetupAsync(ctx, this.purpose);
     if (isKeySetup) {
       Log.succeed('App Store Connect API Key already set up.');
       return nullthrows(
-        await ctx.ios.getIosAppCredentialsWithCommonFieldsAsync(this.app),
+        await ctx.ios.getIosAppCredentialsWithCommonFieldsAsync(ctx.graphqlClient, this.app),
         'iosAppCredentials cannot be null if App Store Connect API Key is already set up'
       );
     }
@@ -103,7 +106,10 @@ export class SetUpAscApiKey {
     ctx: CredentialsContext,
     purpose: AppStoreApiKeyPurpose
   ): Promise<boolean> {
-    const appCredentials = await ctx.ios.getIosAppCredentialsWithCommonFieldsAsync(this.app);
+    const appCredentials = await ctx.ios.getIosAppCredentialsWithCommonFieldsAsync(
+      ctx.graphqlClient,
+      this.app
+    );
     if (purpose !== AppStoreApiKeyPurpose.SUBMISSION_SERVICE) {
       throw new Error(`App Store Connect API Key setup is not yet supported for ${purpose}.`);
     }
@@ -123,7 +129,7 @@ export class SetUpAscApiKey {
       const result = await promptAsync({
         type: 'select',
         name: 'choice',
-        message: 'Select what to use for your project:',
+        message: 'Select the App Store Connect Api Key to use for your project:',
         choices,
       });
       choice = result.choice;

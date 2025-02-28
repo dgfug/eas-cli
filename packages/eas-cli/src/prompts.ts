@@ -1,7 +1,12 @@
 import { constants } from 'os';
-import prompts, { Answers, Choice, Options, PromptType, PromptObject as Question } from 'prompts';
+import prompts, { Answers, Choice, Options, prompts as PromptElements, PromptType } from 'prompts';
 
+import { Question, easMultiselect } from './easMultiselect';
 export { PromptType, Question, Choice };
+
+if (PromptElements) {
+  PromptElements.multiselect = easMultiselect;
+}
 
 export interface ExpoChoice<T> extends Choice {
   value: T;
@@ -14,7 +19,10 @@ export async function promptAsync<T extends string = string>(
   options: Options = {}
 ): Promise<Answers<T>> {
   if (!process.stdin.isTTY && !global.test) {
-    throw new Error('Input is required, but stdin is not readable.');
+    const message = Array.isArray(questions) ? questions[0]?.message : questions.message;
+    throw new Error(
+      `Input is required, but stdin is not readable. Failed to display prompt: ${message}`
+    );
   }
   return await prompts<T>(questions, {
     onCancel() {
@@ -39,19 +47,27 @@ export async function confirmAsync(
   );
   return value;
 }
+
 export async function selectAsync<T>(
   message: string,
   choices: ExpoChoice<T>[],
-  options?: Options
+  config?: {
+    options?: Options;
+    initial?: T;
+    warningMessageForDisabledEntries?: string;
+  }
 ): Promise<T> {
+  const initial = config?.initial ? choices.findIndex(({ value }) => value === config.initial) : 0;
   const { value } = await promptAsync(
     {
       message,
       choices,
+      initial,
       name: 'value',
       type: 'select',
+      warn: config?.warningMessageForDisabledEntries,
     },
-    options
+    config?.options ?? {}
   );
   return value ?? null;
 }

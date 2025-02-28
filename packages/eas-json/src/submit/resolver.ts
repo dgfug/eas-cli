@@ -1,14 +1,14 @@
 import { Platform } from '@expo/eas-build-job';
 import envString from 'env-string';
 
-import { MissingParentProfileError, MissingProfileError } from '../errors';
-import { EasJson } from '../types';
-import { AndroidSubmitProfileSchema, IosSubmitProfileSchema } from './schema';
+import { AndroidSubmitProfileSchema, ResolvedIosSubmitProfileSchema } from './schema';
 import {
   AndroidSubmitProfileFieldsToEvaluate,
   IosSubmitProfileFieldsToEvaluate,
   SubmitProfile,
 } from './types';
+import { MissingParentProfileError, MissingProfileError } from '../errors';
+import { EasJson } from '../types';
 
 export function resolveSubmitProfile<T extends Platform>({
   easJson,
@@ -17,15 +17,23 @@ export function resolveSubmitProfile<T extends Platform>({
 }: {
   easJson: EasJson;
   platform: T;
-  profileName: string;
+  profileName?: string;
 }): SubmitProfile<T> {
-  const submitProfile = resolveProfile({
-    easJson,
-    platform,
-    profileName,
-  });
-  const unevaluatedProfile = mergeProfiles(getDefaultProfile(platform), submitProfile);
-  return evaluateFields(platform, unevaluatedProfile);
+  try {
+    const submitProfile = resolveProfile({
+      easJson,
+      platform,
+      profileName: profileName ?? 'production',
+    });
+    const unevaluatedProfile = mergeProfiles(getDefaultProfile(platform), submitProfile);
+    return evaluateFields(platform, unevaluatedProfile);
+  } catch (err: any) {
+    if (err instanceof MissingProfileError && !profileName) {
+      return getDefaultProfile(platform);
+    } else {
+      throw err;
+    }
+  }
 }
 
 function resolveProfile<T extends Platform>({
@@ -39,7 +47,7 @@ function resolveProfile<T extends Platform>({
   profileName: string;
   depth?: number;
 }): SubmitProfile<T> | undefined {
-  if (depth >= 2) {
+  if (depth >= 5) {
     throw new Error(
       'Too long chain of profile extensions, make sure "extends" keys do not make a cycle'
     );
@@ -91,7 +99,7 @@ function mergeProfiles<T extends Platform>(
 
 export function getDefaultProfile<T extends Platform>(platform: T): SubmitProfile<T> {
   const Schema =
-    platform === Platform.ANDROID ? AndroidSubmitProfileSchema : IosSubmitProfileSchema;
+    platform === Platform.ANDROID ? AndroidSubmitProfileSchema : ResolvedIosSubmitProfileSchema;
   return Schema.validate({}, { allowUnknown: false, abortEarly: false, convert: true }).value;
 }
 

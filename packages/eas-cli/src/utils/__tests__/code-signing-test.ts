@@ -8,7 +8,6 @@ import {
   getCodeSigningInfoAsync,
   getKeyAndCertificateFromPathsAsync,
   getManifestBodyAsync,
-  parseMultipartMixedResponseAsync,
 } from '../code-signing';
 
 function generateMultipartBody(stringifiedManifest: string): FormData {
@@ -37,7 +36,7 @@ describe(getCodeSigningInfoAsync, () => {
           slug: 'test',
           updates: {
             codeSigningCertificate: 'wat',
-          } as any,
+          },
         },
         'test'
       )
@@ -92,28 +91,13 @@ describe(getKeyAndCertificateFromPathsAsync, () => {
   });
 });
 
-describe(parseMultipartMixedResponseAsync, () => {
-  it('parses multipart response', async () => {
-    const form = generateMultipartBody(JSON.stringify({ hello: 'world' }));
-
-    const parts = await parseMultipartMixedResponseAsync({
-      arrayBuffer: async () => form.getBuffer(),
-      headers: new Headers({
-        'content-type': `multipart/mixed; boundary=${form.getBoundary()}`,
-      }),
-    } as any as Response);
-
-    expect(parts).toHaveLength(2);
-  });
-});
-
 describe(getManifestBodyAsync, () => {
   it('gets multipart manifest body', async () => {
     const stringifiedManifest = JSON.stringify({ hello: 'world' });
     const form = generateMultipartBody(stringifiedManifest);
 
     const body = await getManifestBodyAsync({
-      arrayBuffer: async () => form.getBuffer(),
+      arrayBuffer: async () => new Uint8Array(form.getBuffer()).buffer,
       headers: new Headers({
         'content-type': `multipart/mixed; boundary=${form.getBoundary()}`,
       }),
@@ -165,9 +149,9 @@ describe(checkManifestBodyAgainstUpdateInfoGroup, () => {
         },
       ],
     };
-    expect(() =>
-      checkManifestBodyAgainstUpdateInfoGroup(manifestResponseBodyJSON, partialManifest)
-    ).not.toThrow();
+    expect(() => {
+      checkManifestBodyAgainstUpdateInfoGroup(manifestResponseBodyJSON, partialManifest);
+    }).not.toThrow();
   });
 
   it('throws when extra.expoClient is tampered with', () => {
@@ -203,9 +187,9 @@ describe(checkManifestBodyAgainstUpdateInfoGroup, () => {
       },
       assets: [],
     };
-    expect(() =>
-      checkManifestBodyAgainstUpdateInfoGroup(manifestResponseBodyJSON, partialManifest)
-    ).toThrow(
+    expect(() => {
+      checkManifestBodyAgainstUpdateInfoGroup(manifestResponseBodyJSON, partialManifest);
+    }).toThrow(
       `Code signing manifest integrity error: The manifest being signed contains an extra.expoClient field that does not match the initially uploaded manifest's extra.expoClient field`
     );
   });
@@ -244,9 +228,9 @@ describe(checkManifestBodyAgainstUpdateInfoGroup, () => {
       },
       assets: [],
     };
-    expect(() =>
-      checkManifestBodyAgainstUpdateInfoGroup(manifestResponseBodyJSON, partialManifest)
-    ).toThrow(
+    expect(() => {
+      checkManifestBodyAgainstUpdateInfoGroup(manifestResponseBodyJSON, partialManifest);
+    }).toThrow(
       'Code signing manifest integrity error: The manifest being signed has an assets array of differing length from the initially uploaded manifest'
     );
   });
@@ -292,9 +276,9 @@ describe(checkManifestBodyAgainstUpdateInfoGroup, () => {
         },
       ],
     };
-    expect(() =>
-      checkManifestBodyAgainstUpdateInfoGroup(manifestResponseBodyJSON, partialManifest)
-    ).toThrow(
+    expect(() => {
+      checkManifestBodyAgainstUpdateInfoGroup(manifestResponseBodyJSON, partialManifest);
+    }).toThrow(
       'Code signing manifest integrity error: The manifest being signed has is missing an asset specified in the initially uploaded manifest: 3'
     );
   });
@@ -340,9 +324,9 @@ describe(checkManifestBodyAgainstUpdateInfoGroup, () => {
         },
       ],
     };
-    expect(() =>
-      checkManifestBodyAgainstUpdateInfoGroup(manifestResponseBodyJSON, partialManifest)
-    ).toThrow(
+    expect(() => {
+      checkManifestBodyAgainstUpdateInfoGroup(manifestResponseBodyJSON, partialManifest);
+    }).toThrow(
       'Code signing manifest integrity error: Manifest asset tamper detected for asset: 2; field: contentType'
     );
   });

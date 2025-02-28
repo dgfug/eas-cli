@@ -1,21 +1,19 @@
+import { getAnalyticsEnabledAsync, setAnalyticsEnabledAsync } from '../analytics/AnalyticsManager';
 import EasCommand from '../commandUtils/EasCommand';
 import Log from '../log';
-import UserSettings from '../user/UserSettings';
 
 export default class AnalyticsView extends EasCommand {
-  static description = 'display or change analytics settings';
+  static override description = 'display or change analytics settings';
 
-  static args = [{ name: 'STATUS', options: ['on', 'off'] }];
-
-  protected requiresAuthentication = false;
+  static override args = [{ name: 'STATUS', options: ['on', 'off'] }];
 
   async runAsync(): Promise<void> {
     const { STATUS: status } = (await this.parse(AnalyticsView)).args;
     if (status) {
-      await UserSettings.setAsync('analyticsEnabled', status === 'on');
+      await setAnalyticsEnabledAsync(status === 'on');
       Log.withTick(`${status === 'on' ? 'Enabling' : 'Disabling'} analytics.`);
     } else {
-      const analyticsEnabled = await UserSettings.getAsync('analyticsEnabled', null);
+      const analyticsEnabled = await getAnalyticsEnabledAsync();
       Log.log(
         `Analytics are ${
           analyticsEnabled === false ? 'disabled' : 'enabled'

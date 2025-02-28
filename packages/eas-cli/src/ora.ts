@@ -1,3 +1,4 @@
+import { boolish } from 'getenv';
 // eslint-disable-next-line
 import oraReal, { Options, Ora } from 'ora';
 
@@ -14,6 +15,8 @@ const warnReal = console.warn;
 // eslint-disable-next-line no-console
 const errorReal = console.error;
 
+const isCi = boolish('CI', false);
+
 /**
  * A custom ora spinner that sends the stream to stdout in CI, or non-TTY, instead of stderr (the default).
  *
@@ -22,7 +25,7 @@ const errorReal = console.error;
  */
 export function ora(options?: Options | string): Ora {
   const inputOptions = typeof options === 'string' ? { text: options } : options ?? {};
-  const disabled = Log.isDebug || !process.stdin.isTTY;
+  const disabled = Log.isDebug || !process.stdin.isTTY || isCi;
   const spinner = oraReal({
     // Ensure our non-interactive mode emulates CI mode.
     isEnabled: !disabled,
@@ -43,20 +46,28 @@ export function ora(options?: Options | string): Ora {
 
   const wrapNativeLogs = (): void => {
     // eslint-disable-next-line no-console
-    console.log = (...args: any) => logWrap(logReal, args);
+    console.log = (...args: any) => {
+      logWrap(logReal, args);
+    };
     // eslint-disable-next-line no-console
-    console.info = (...args: any) => logWrap(infoReal, args);
+    console.info = (...args: any) => {
+      logWrap(infoReal, args);
+    };
     // eslint-disable-next-line no-console
-    console.warn = (...args: any) => logWrap(warnReal, args);
+    console.warn = (...args: any) => {
+      logWrap(warnReal, args);
+    };
     // eslint-disable-next-line no-console
-    console.error = (...args: any) => logWrap(errorReal, args);
+    console.error = (...args: any) => {
+      logWrap(errorReal, args);
+    };
   };
 
   const resetNativeLogs = (): void => {
     // eslint-disable-next-line no-console
     console.log = logReal;
     // eslint-disable-next-line no-console
-    console.info = logReal;
+    console.info = infoReal;
     // eslint-disable-next-line no-console
     console.warn = warnReal;
     // eslint-disable-next-line no-console
@@ -64,7 +75,24 @@ export function ora(options?: Options | string): Ora {
   };
 
   spinner.start = (text): Ora => {
-    wrapNativeLogs();
+    // wrapNativeLogs wraps calls to console so they always:
+    // 1. stop the spinner
+    // 2. log the message
+    // 3. start the spinner again
+    // Every restart of the spinner causes the spinner message to be logged again
+    // which makes logs look like
+    //
+    // - Exporting...
+    // [expo-cli] Starting Metro Bundler
+    // - Exporting...
+    // [expo-cli] Android Bundling complete 3492ms
+    // - Exporting...
+    //
+    // Skipping wrapping native logs removes the repeated interleaved "Exporting..." messages.
+    if (!disabled) {
+      wrapNativeLogs();
+    }
+
     return oraStart(text);
   };
 

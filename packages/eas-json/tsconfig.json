@@ -1,19 +1,18 @@
 {
+  "extends": "@tsconfig/node18/tsconfig.json",
   "compilerOptions": {
     "declaration": true,
     "importHelpers": true,
     "module": "commonjs",
-    "esModuleInterop": true,
+    "moduleResolution": "node",
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
     "noImplicitReturns": true,
-    "strict": true,
-    "target": "ES2019",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "outDir": "build",
     "rootDir": "src",
-    "typeRoots": [
-      "../../node_modules/@types",
-      "../../ts-declarations",
-      "./node_modules/@types"
-    ]
+    "typeRoots": ["../../node_modules/@types", "../../ts-declarations", "./node_modules/@types"]
   },
   "include": ["src/**/*"]
 }

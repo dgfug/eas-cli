@@ -1,18 +1,28 @@
 import { Platform } from '@expo/eas-build-job';
+import chalk from 'chalk';
 import envinfo from 'envinfo';
 
 import EasCommand from '../commandUtils/EasCommand';
 import Log from '../log';
-import { findProjectRootAsync } from '../project/projectUtils';
+import { ora } from '../ora';
 import { resolveWorkflowAsync } from '../project/workflow';
 import { easCliVersion } from '../utils/easCli';
+import { Client } from '../vcs/vcs';
 
 export default class Diagnostics extends EasCommand {
-  static description = 'display environment info';
+  static override description = 'display environment info';
 
-  protected requiresAuthentication = false;
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectDir,
+    ...this.ContextOptions.Vcs,
+  };
 
   async runAsync(): Promise<void> {
+    const { projectDir, vcsClient } = await this.getContextAsync(Diagnostics, {
+      nonInteractive: true,
+    });
+
+    const spinner = ora().start(`Gathering diagnostic information...`);
     const info = await envinfo.run(
       {
         System: ['OS', 'Shell'],
@@ -33,24 +43,24 @@ export default class Diagnostics extends EasCommand {
         npmGlobalPackages: ['eas-cli', 'expo-cli'],
       },
       {
-        title: `EAS CLI ${easCliVersion} environment info`,
+        title: chalk.bold(`EAS CLI ${easCliVersion} environment info`),
       }
     );
+    spinner.succeed('All needed information gathered!');
 
     Log.log(info.trimEnd());
-    await this.printWorkflowAsync();
+    await this.printWorkflowAsync(projectDir, vcsClient);
     Log.newLine();
   }
 
-  private async printWorkflowAsync(): Promise<void> {
-    const projectDir = await findProjectRootAsync();
-    const androidWorkflow = await resolveWorkflowAsync(projectDir, Platform.ANDROID);
-    const iosWorkflow = await resolveWorkflowAsync(projectDir, Platform.IOS);
+  private async printWorkflowAsync(projectDir: string, vcsClient: Client): Promise<void> {
+    const androidWorkflow = await resolveWorkflowAsync(projectDir, Platform.ANDROID, vcsClient);
+    const iosWorkflow = await resolveWorkflowAsync(projectDir, Platform.IOS, vcsClient);
 
     if (androidWorkflow === iosWorkflow) {
       Log.log(`    Project workflow: ${androidWorkflow}`);
     } else {
-      Log.log(`    Project Workflow:`);
+      Log.log(`    Project workflow:`);
       Log.log(`      Android: ${androidWorkflow}`);
       Log.log(`      iOS: ${iosWorkflow}`);
     }

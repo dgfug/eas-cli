@@ -1,3 +1,4 @@
+import { BackupKeystore } from './DownloadKeystore';
 import {
   AndroidAppBuildCredentialsFragment,
   AndroidKeystoreType,
@@ -12,10 +13,9 @@ import {
 } from '../../manager/SelectAndroidBuildCredentials';
 import { AppLookupParams } from '../api/GraphqlClient';
 import { getKeystoreWithType } from '../utils/keystoreNew';
-import { BackupKeystore } from './DownloadKeystore';
 
 export class SetUpBuildCredentialsFromCredentialsJson {
-  constructor(private app: AppLookupParams) {}
+  constructor(private readonly app: AppLookupParams) {}
 
   async runAsync(ctx: CredentialsContext): Promise<AndroidAppBuildCredentialsFragment | null> {
     if (ctx.nonInteractive) {
@@ -62,6 +62,7 @@ export class SetUpBuildCredentialsFromCredentialsJson {
       }
     }
     const keystoreFragment = await ctx.android.createKeystoreAsync(
+      ctx.graphqlClient,
       this.app.account,
       providedKeystoreWithType
     );
@@ -70,12 +71,17 @@ export class SetUpBuildCredentialsFromCredentialsJson {
       selectBuildCredentialsResult.resultType ===
       SelectAndroidBuildCredentialsResultType.CREATE_REQUEST
     ) {
-      buildCredentials = await ctx.android.createAndroidAppBuildCredentialsAsync(this.app, {
-        ...selectBuildCredentialsResult.result,
-        androidKeystoreId: keystoreFragment.id,
-      });
+      buildCredentials = await ctx.android.createAndroidAppBuildCredentialsAsync(
+        ctx.graphqlClient,
+        this.app,
+        {
+          ...selectBuildCredentialsResult.result,
+          androidKeystoreId: keystoreFragment.id,
+        }
+      );
     } else {
       buildCredentials = await ctx.android.updateAndroidAppBuildCredentialsAsync(
+        ctx.graphqlClient,
         selectBuildCredentialsResult.result,
         {
           androidKeystoreId: keystoreFragment.id,

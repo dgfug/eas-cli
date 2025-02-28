@@ -10,12 +10,14 @@ export function getProjectDashboardUrl(accountName: string, projectName: string)
   ).toString();
 }
 
-export function getBuildLogsUrl(build: BuildFragment): string {
+export function getBuildLogsUrl(build: BuildFragment, hash?: string): string {
   const { project } = build;
   const url =
     project.__typename !== 'App'
       ? `/builds/${build.id}`
-      : `/accounts/${project.ownerAccount.name}/projects/${project.slug}/builds/${build.id}`;
+      : `/accounts/${project.ownerAccount.name}/projects/${project.slug}/builds/${build.id}${
+          hash ? `#${hash}` : ''
+        }`;
 
   return new URL(url, getExpoWebsiteBaseUrl()).toString();
 }
@@ -34,4 +36,39 @@ export function getInternalDistributionInstallUrl(build: BuildFragment): string 
   assert(build.artifacts?.buildUrl, 'buildUrl is missing');
 
   return build.artifacts.buildUrl;
+}
+
+export function getUpdateGroupUrl(
+  accountName: string,
+  projectName: string,
+  updateGroupId: string
+): string {
+  return new URL(
+    `/accounts/${encodeURIComponent(accountName)}/projects/${encodeURIComponent(
+      projectName
+    )}/updates/${encodeURIComponent(updateGroupId)}`,
+    getExpoWebsiteBaseUrl()
+  ).toString();
+}
+
+export function getWorkflowRunUrl(
+  accountName: string,
+  projectName: string,
+  workflowRunId: string
+): string {
+  return new URL(
+    `/accounts/${encodeURIComponent(accountName)}/projects/${encodeURIComponent(
+      projectName
+    )}/workflows/${workflowRunId}`,
+    getExpoWebsiteBaseUrl()
+  ).toString();
+}
+
+export function getProjectGitHubSettingsUrl(accountName: string, projectName: string): string {
+  return new URL(
+    `/accounts/${encodeURIComponent(accountName)}/projects/${encodeURIComponent(
+      projectName
+    )}/github`,
+    getExpoWebsiteBaseUrl()
+  ).toString();
 }

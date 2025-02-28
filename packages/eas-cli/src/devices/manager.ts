@@ -1,54 +1,62 @@
-import { ExpoConfig } from '@expo/config';
 import assert from 'assert';
 import chalk from 'chalk';
 
-import { AppleTeamMutation } from '../credentials/ios/api/graphql/mutations/AppleTeamMutation';
-import { AppleTeamQuery } from '../credentials/ios/api/graphql/queries/AppleTeamQuery';
-import { AppleTeamFragment } from '../graphql/generated';
-import Log from '../log';
-import { getProjectAccountNameAsync } from '../project/projectUtils';
-import { Choice, confirmAsync, promptAsync } from '../prompts';
-import { Account, findAccountByName } from '../user/Account';
-import { Actor, getActorDisplayName } from '../user/User';
 import DeviceCreateAction from './actions/create/action';
 import { DeviceManagerContext } from './context';
+import { ExpoGraphqlClient } from '../commandUtils/context/contextUtils/createGraphqlClient';
+import { AppleTeamMutation } from '../credentials/ios/api/graphql/mutations/AppleTeamMutation';
+import { AppleTeamQuery } from '../credentials/ios/api/graphql/queries/AppleTeamQuery';
+import { AccountFragment, AppleTeamFragment } from '../graphql/generated';
+import Log from '../log';
+import { getOwnerAccountForProjectIdAsync } from '../project/projectUtils';
+import { Choice, confirmAsync, promptAsync } from '../prompts';
+import { Actor } from '../user/User';
 
-const CREATE_COMMAND_DESCRIPTION = `This command lets you register your Apple devices (iPhones and iPads) for internal distribution of your app.
-Internal distribution means that you won't need upload your app archive to App Store / Testflight.
-Your app archive (.ipa) will be installable on your equipment as long as you sign your application with an adhoc provisiong profile.
-The provisioning profile needs to contain the UDIDs (unique identifiers) of your iPhones and iPads.
+const CREATE_COMMAND_DESCRIPTION = `This command lets you register your Apple devices (iPhones, iPads and Macs) for internal distribution of your app.
+Internal distribution means that you won't need to upload your app archive to App Store / Testflight.
+Your app archive (.ipa) will be installable on your equipment as long as you sign your application with an adhoc provisioning profile.
+The provisioning profile needs to contain the UDIDs (unique identifiers) of your iPhones, iPads and Macs.
 
-First of all, please choose the Expo account under which you want to register your devices.
+First of all, choose the Expo account under which you want to register your devices.
 Later, authenticate with Apple and choose your desired Apple Team (if your Apple ID has access to multiple teams).`;
 
 export default class DeviceManager {
-  constructor(private ctx: DeviceManagerContext) {}
+  constructor(private readonly ctx: DeviceManagerContext) {}
 
   public async createAsync(): Promise<void> {
     Log.log(chalk.green(CREATE_COMMAND_DESCRIPTION));
     Log.addNewLineIfNone();
 
     const account = await this.resolveAccountAsync();
-    const { team } = await this.ctx.appStore.ensureAuthenticatedAsync();
-    const appleTeam = await ensureAppleTeamExistsAsync(account.id, {
-      appleTeamIdentifier: team.id,
-      appleTeamName: team.name,
+    const appleAuthCtx = await this.ctx.appStore.ensureAuthenticatedAsync();
+    const appleTeam = await ensureAppleTeamExistsAsync(this.ctx.graphqlClient, account.id, {
+      appleTeamIdentifier: appleAuthCtx.team.id,
+      appleTeamName: appleAuthCtx.team.name,
     });
-    const action = new DeviceCreateAction(account, appleTeam);
+    const action = new DeviceCreateAction(
+      this.ctx.graphqlClient,
+      this.ctx.appStore,
+      account,
+      appleTeam
+    );
     await action.runAsync();
   }
 
-  private async resolveAccountAsync(): Promise<Account> {
-    const resolver = new AccountResolver(this.ctx.exp, this.ctx.user);
+  private async resolveAccountAsync(): Promise<AccountFragment> {
+    const resolver = new AccountResolver(this.ctx.graphqlClient, this.ctx.projectId, this.ctx.user);
     return await resolver.resolveAccountAsync();
   }
 }
 
 export class AccountResolver {
-  constructor(private exp: ExpoConfig | null, private user: Actor) {}
+  constructor(
+    private readonly graphqlClient: ExpoGraphqlClient,
+    private readonly projectId: string | null,
+    private readonly user: Actor
+  ) {}
 
-  public async resolveAccountAsync(): Promise<Account> {
-    if (this.exp) {
+  public async resolveAccountAsync(): Promise<AccountFragment> {
+    if (this.projectId) {
       const account = await this.resolveProjectAccountAsync();
       if (account) {
         return account;
@@ -57,30 +65,20 @@ export class AccountResolver {
     return await this.promptForAccountAsync();
   }
 
-  private async resolveProjectAccountAsync(): Promise<Account | undefined> {
-    assert(this.exp, 'expo config is not set');
-
-    const projectAccountName = await getProjectAccountNameAsync(this.exp);
-    const projectAccount = findAccountByName(this.user.accounts, projectAccountName);
-    if (!projectAccount) {
-      Log.warn(
-        `Your account (${getActorDisplayName(this.user)}) doesn't have access to the ${chalk.bold(
-          projectAccountName
-        )} account`
-      );
-      return;
-    }
+  private async resolveProjectAccountAsync(): Promise<AccountFragment | undefined> {
+    assert(this.projectId, 'expo config is not set');
+    const account = await getOwnerAccountForProjectIdAsync(this.graphqlClient, this.projectId);
 
     const useProjectAccount = await confirmAsync({
-      message: `You're inside the project directory. Would you like to use ${chalk.underline(
-        projectAccountName
+      message: `You're inside the project directory. Would you like to use the ${chalk.underline(
+        account.name
       )} account?`,
     });
 
-    return useProjectAccount ? projectAccount : undefined;
+    return useProjectAccount ? account : undefined;
   }
 
-  private async promptForAccountAsync(): Promise<Account> {
+  private async promptForAccountAsync(): Promise<AccountFragment> {
     const choices: Choice[] = this.user.accounts.map(account => ({
       title: account.name,
       value: account,
@@ -96,10 +94,12 @@ export class AccountResolver {
 }
 
 async function ensureAppleTeamExistsAsync(
+  graphqlClient: ExpoGraphqlClient,
   accountId: string,
-  { appleTeamIdentifier, appleTeamName }: { appleTeamIdentifier: string; appleTeamName: string }
+  { appleTeamIdentifier, appleTeamName }: { appleTeamIdentifier: string; appleTeamName?: string }
 ): Promise<AppleTeamFragment> {
   const appleTeam = await AppleTeamQuery.getByAppleTeamIdentifierAsync(
+    graphqlClient,
     accountId,
     appleTeamIdentifier
   );
@@ -107,6 +107,7 @@ async function ensureAppleTeamExistsAsync(
     return appleTeam;
   } else {
     return await AppleTeamMutation.createAppleTeamAsync(
+      graphqlClient,
       {
         appleTeamIdentifier,
         appleTeamName,

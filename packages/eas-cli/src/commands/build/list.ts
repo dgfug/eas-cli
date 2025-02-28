@@ -1,131 +1,142 @@
-import { getConfig } from '@expo/config';
 import { Flags } from '@oclif/core';
-import chalk from 'chalk';
 
+import { BUILDS_LIMIT, listAndRenderBuildsOnAppAsync } from '../../build/queries';
 import { BuildDistributionType, BuildStatus } from '../../build/types';
-import { formatGraphQLBuild } from '../../build/utils/formatBuild';
 import EasCommand from '../../commandUtils/EasCommand';
+import { EasNonInteractiveAndJsonFlags } from '../../commandUtils/flags';
 import {
-  AppPlatform,
-  DistributionType,
-  BuildStatus as GraphQLBuildStatus,
-} from '../../graphql/generated';
-import { BuildQuery } from '../../graphql/queries/BuildQuery';
+  EasPaginatedQueryFlags,
+  getLimitFlagWithCustomValues,
+  getPaginatedQueryOptions,
+} from '../../commandUtils/pagination';
+import { AppPlatform, BuildStatus as GraphQLBuildStatus } from '../../graphql/generated';
 import Log from '../../log';
-import { ora } from '../../ora';
 import { RequestedPlatform } from '../../platform';
-import {
-  findProjectRootAsync,
-  getProjectFullNameAsync,
-  getProjectIdAsync,
-} from '../../project/projectUtils';
-import { enableJsonOutput, printJsonOnlyOutput } from '../../utils/json';
+import { getDisplayNameForProjectIdAsync } from '../../project/projectUtils';
+import { buildDistributionTypeToGraphQLDistributionType } from '../../utils/buildDistribution';
+import { enableJsonOutput } from '../../utils/json';
 
 export default class BuildList extends EasCommand {
-  static description = 'list all builds for your project';
+  static override description = 'list all builds for your project';
 
-  static flags = {
+  static override flags = {
     platform: Flags.enum({
-      options: [RequestedPlatform.All, RequestedPlatform.Android, RequestedPlatform.Ios],
-    }),
-    json: Flags.boolean({
-      description: 'Enable JSON output, non-JSON messages will be printed to stderr',
+      options: Object.values(RequestedPlatform),
+      char: 'p',
     }),
     status: Flags.enum({
-      options: [
-        BuildStatus.NEW,
-        BuildStatus.IN_QUEUE,
-        BuildStatus.IN_PROGRESS,
-        BuildStatus.ERRORED,
-        BuildStatus.FINISHED,
-        BuildStatus.CANCELED,
-      ],
+      options: Object.values(BuildStatus),
+      description: 'Filter only builds with the specified status',
     }),
     distribution: Flags.enum({
-      options: [
-        BuildDistributionType.STORE,
-        BuildDistributionType.INTERNAL,
-        BuildDistributionType.SIMULATOR,
-      ],
+      options: Object.values(BuildDistributionType),
+      description: 'Filter only builds with the specified distribution type',
     }),
     channel: Flags.string(),
-    appVersion: Flags.string(),
-    appBuildVersion: Flags.string(),
-    sdkVersion: Flags.string(),
-    runtimeVersion: Flags.string(),
-    appIdentifier: Flags.string(),
-    buildProfile: Flags.string(),
-    gitCommitHash: Flags.string(),
-    limit: Flags.integer(),
+    'app-version': Flags.string({
+      aliases: ['appVersion'],
+      description: 'Filter only builds created with the specified main app version',
+    }),
+    'app-build-version': Flags.string({
+      aliases: ['appBuildVersion'],
+      description: 'Filter only builds created with the specified app build version',
+    }),
+    'sdk-version': Flags.string({
+      aliases: ['sdkVersion'],
+      description: 'Filter only builds created with the specified Expo SDK version',
+    }),
+    'runtime-version': Flags.string({
+      aliases: ['runtimeVersion'],
+      description: 'Filter only builds created with the specified runtime version',
+    }),
+    'app-identifier': Flags.string({
+      aliases: ['appIdentifier'],
+      description: 'Filter only builds created with the specified app identifier',
+    }),
+    'build-profile': Flags.string({
+      char: 'e',
+      aliases: ['profile', 'buildProfile'],
+      description: 'Filter only builds created with the specified build profile',
+    }),
+    'git-commit-hash': Flags.string({
+      aliases: ['gitCommitHash'],
+      description: 'Filter only builds created with the specified git commit hash',
+    }),
+    'fingerprint-hash': Flags.string({
+      description: 'Filter only builds with the specified fingerprint hash',
+    }),
+    ...EasPaginatedQueryFlags,
+    limit: getLimitFlagWithCustomValues({ defaultTo: 10, limit: BUILDS_LIMIT }),
+    ...EasNonInteractiveAndJsonFlags,
+    simulator: Flags.boolean({
+      description:
+        'Filter only iOS simulator builds. Can only be used with --platform flag set to "ios"',
+    }),
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectId,
+    ...this.ContextOptions.LoggedIn,
+    ...this.ContextOptions.Vcs,
   };
 
   async runAsync(): Promise<void> {
     const { flags } = await this.parse(BuildList);
+    const paginatedQueryOptions = getPaginatedQueryOptions(flags);
     const {
-      json,
+      json: jsonFlag,
       platform: requestedPlatform,
       status: buildStatus,
       distribution: buildDistribution,
-      limit = 10,
+      'non-interactive': nonInteractive,
     } = flags;
-    if (json) {
+    if (buildDistribution === BuildDistributionType.SIMULATOR) {
+      Log.warn(
+        `Using --distribution flag with "simulator" value is deprecated - use --simulator flag instead`
+      );
+    }
+    if (flags.simulator && requestedPlatform !== RequestedPlatform.Ios) {
+      Log.error(
+        `The --simulator flag is only usable with --platform flag set to "ios", as it is used to filter specifically iOS simulator builds`
+      );
+      process.exit(1);
+    }
+    const {
+      projectId,
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(BuildList, {
+      nonInteractive,
+    });
+    if (jsonFlag) {
       enableJsonOutput();
     }
 
     const platform = toAppPlatform(requestedPlatform);
     const graphqlBuildStatus = toGraphQLBuildStatus(buildStatus);
-    const graphqlBuildDistribution = toGraphQLBuildDistribution(buildDistribution);
+    const graphqlBuildDistribution =
+      buildDistributionTypeToGraphQLDistributionType(buildDistribution);
+    const displayName = await getDisplayNameForProjectIdAsync(graphqlClient, projectId);
 
-    const projectDir = await findProjectRootAsync();
-    const { exp } = getConfig(projectDir, { skipSDKVersionRequirement: true });
-    const projectId = await getProjectIdAsync(exp);
-    const projectName = await getProjectFullNameAsync(exp);
-
-    const spinner = ora().start('Fetching the build list for the project…');
-
-    try {
-      const builds = await BuildQuery.allForAppAsync(projectId, {
-        limit,
-        filter: {
-          platform,
-          status: graphqlBuildStatus,
-          distribution: graphqlBuildDistribution,
-          channel: flags.channel,
-          appVersion: flags.appVersion,
-          appBuildVersion: flags.appBuildVersion,
-          sdkVersion: flags.sdkVersion,
-          runtimeVersion: flags.runtimeVersion,
-          appIdentifier: flags.appIdentifier,
-          buildProfile: flags.buildProfile,
-          gitCommitHash: flags.gitCommitHash,
-        },
-      });
-
-      if (builds.length) {
-        if (platform || graphqlBuildStatus) {
-          spinner.succeed(
-            `Showing ${builds.length} matching builds for the project ${projectName}`
-          );
-        } else {
-          spinner.succeed(`Showing last ${builds.length} builds for the project ${projectName}`);
-        }
-
-        if (json) {
-          printJsonOnlyOutput(builds);
-        } else {
-          const list = builds
-            .map(build => formatGraphQLBuild(build))
-            .join(`\n\n${chalk.dim('———')}\n\n`);
-
-          Log.log(`\n${list}`);
-        }
-      } else {
-        spinner.fail(`Couldn't find any builds for the project ${projectName}`);
-      }
-    } catch (e) {
-      spinner.fail(`Something went wrong and we couldn't fetch the build list ${projectName}`);
-      throw e;
-    }
+    await listAndRenderBuildsOnAppAsync(graphqlClient, {
+      projectId,
+      projectDisplayName: displayName,
+      filter: {
+        platform,
+        status: graphqlBuildStatus,
+        distribution: graphqlBuildDistribution,
+        channel: flags.channel,
+        appVersion: flags['app-version'],
+        appBuildVersion: flags['app-build-version'],
+        sdkVersion: flags['sdk-version'],
+        runtimeVersion: flags['runtime-version'],
+        appIdentifier: flags['app-identifier'],
+        buildProfile: flags['build-profile'],
+        gitCommitHash: flags['git-commit-hash'],
+        simulator: flags.simulator,
+        fingerprintHash: flags['fingerprint-hash'],
+      },
+      paginatedQueryOptions,
+    });
   }
 }
 
@@ -148,25 +159,13 @@ const toGraphQLBuildStatus = (buildStatus?: BuildStatus): GraphQLBuildStatus | u
     return GraphQLBuildStatus.InQueue;
   } else if (buildStatus === BuildStatus.IN_PROGRESS) {
     return GraphQLBuildStatus.InProgress;
+  } else if (buildStatus === BuildStatus.PENDING_CANCEL) {
+    return GraphQLBuildStatus.PendingCancel;
   } else if (buildStatus === BuildStatus.ERRORED) {
     return GraphQLBuildStatus.Errored;
   } else if (buildStatus === BuildStatus.FINISHED) {
     return GraphQLBuildStatus.Finished;
   } else {
     return GraphQLBuildStatus.Canceled;
-  }
-};
-
-const toGraphQLBuildDistribution = (
-  buildDistribution?: BuildDistributionType
-): DistributionType | undefined => {
-  if (buildDistribution === BuildDistributionType.STORE) {
-    return DistributionType.Store;
-  } else if (buildDistribution === BuildDistributionType.INTERNAL) {
-    return DistributionType.Internal;
-  } else if (buildDistribution === BuildDistributionType.SIMULATOR) {
-    return DistributionType.Simulator;
-  } else {
-    return undefined;
   }
 };

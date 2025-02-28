@@ -1,27 +1,27 @@
-import { getConfig } from '@expo/config';
-import chalk from 'chalk';
+import { Flags } from '@oclif/core';
 import gql from 'graphql-tag';
 
 import EasCommand from '../../commandUtils/EasCommand';
-import { graphqlClient, withErrorHandlingAsync } from '../../graphql/client';
+import { ensureBuildExistsAsync, fetchBuildsAsync, formatBuild } from '../../commandUtils/builds';
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
+import { EASNonInteractiveFlag } from '../../commandUtils/flags';
+import { withErrorHandlingAsync } from '../../graphql/client';
 import {
   Build,
   BuildStatus,
   CancelBuildMutation,
   CancelBuildMutationVariables,
 } from '../../graphql/generated';
-import { BuildQuery } from '../../graphql/queries/BuildQuery';
 import Log from '../../log';
 import { ora } from '../../ora';
-import { appPlatformEmojis } from '../../platform';
-import {
-  findProjectRootAsync,
-  getProjectFullNameAsync,
-  getProjectIdAsync,
-} from '../../project/projectUtils';
+import { RequestedPlatform } from '../../platform';
+import { getDisplayNameForProjectIdAsync } from '../../project/projectUtils';
 import { confirmAsync, selectAsync } from '../../prompts';
 
-async function cancelBuildAsync(buildId: string): Promise<Pick<Build, 'id' | 'status'>> {
+async function cancelBuildAsync(
+  graphqlClient: ExpoGraphqlClient,
+  buildId: string
+): Promise<Pick<Build, 'id' | 'status'>> {
   const data = await withErrorHandlingAsync(
     graphqlClient
       .mutation<CancelBuildMutation, CancelBuildMutationVariables>(
@@ -39,102 +39,126 @@ async function cancelBuildAsync(buildId: string): Promise<Pick<Build, 'id' | 'st
       )
       .toPromise()
   );
-  return data.build!.cancel;
+  return data.build.cancel;
 }
 
-function formatUnfinishedBuild(
-  build: Pick<Build, 'id' | 'platform' | 'status' | 'createdAt'>
-): string {
-  const platform = appPlatformEmojis[build.platform];
-  const startTime = new Date(build.createdAt).toLocaleString();
-  let statusText: string;
-  if (build.status === BuildStatus.New) {
-    statusText = 'new';
-  } else if (build.status === BuildStatus.InQueue) {
-    statusText = 'in queue';
-  } else {
-    statusText = 'in progress';
-  }
-  const status = chalk.blue(statusText);
-  return `${platform} Started at: ${startTime}, Status: ${status}, Id: ${build.id}`;
-}
-
-async function selectBuildToCancelAsync(
+export async function selectBuildToCancelAsync(
+  graphqlClient: ExpoGraphqlClient,
   projectId: string,
-  projectFullName: string
+  projectDisplayName: string,
+  filters?: {
+    platform?: RequestedPlatform;
+    profile?: string;
+  }
 ): Promise<string | null> {
   const spinner = ora().start('Fetching the uncompleted builds…');
+
   let builds;
   try {
-    const [newBuilds, inQueueBuilds, inProgressBuilds] = await Promise.all([
-      BuildQuery.allForAppAsync(projectId, { filter: { status: BuildStatus.New } }),
-      BuildQuery.allForAppAsync(projectId, { filter: { status: BuildStatus.InQueue } }),
-      BuildQuery.allForAppAsync(projectId, { filter: { status: BuildStatus.InProgress } }),
-    ]);
+    builds = await fetchBuildsAsync({
+      graphqlClient,
+      projectId,
+      filters: {
+        ...filters,
+        statuses: [BuildStatus.New, BuildStatus.InQueue, BuildStatus.InProgress],
+      },
+    });
     spinner.stop();
-    builds = [...newBuilds, ...inQueueBuilds, ...inProgressBuilds];
   } catch (error) {
     spinner.fail(
-      `Something went wrong and we couldn't fetch the builds for the project ${projectFullName}.`
+      `Something went wrong and we couldn't fetch the builds for the project ${projectDisplayName}.`
     );
     throw error;
   }
   if (builds.length === 0) {
-    Log.warn(`There aren't any uncompleted builds for the project ${projectFullName}.`);
+    Log.warn(`We couldn't find any uncompleted builds for the project ${projectDisplayName}.`);
     return null;
-  } else if (builds.length === 1) {
-    Log.log('Found one build');
-    Log.log(formatUnfinishedBuild(builds[0]));
-    await confirmAsync({
-      message: 'Do you want to cancel it?',
-    });
-    return builds[0].id;
   } else {
     const buildId = await selectAsync<string>(
       'Which build do you want to cancel?',
       builds.map(build => ({
-        title: formatUnfinishedBuild(build),
+        title: formatBuild(build),
         value: build.id,
       }))
     );
-    return buildId;
-  }
-}
 
-async function ensureBuildExistsAsync(buildId: string): Promise<void> {
-  try {
-    await BuildQuery.byIdAsync(buildId);
-  } catch (err) {
-    throw new Error(`Couldn't find a build matching the id ${buildId}`);
+    return (await confirmAsync({
+      message: 'Are you sure you want to cancel it?',
+    }))
+      ? buildId
+      : null;
   }
 }
 
 export default class BuildCancel extends EasCommand {
-  static description = 'cancel a build';
+  static override description = 'cancel a build';
 
-  static args = [{ name: 'BUILD_ID' }];
+  static override args = [{ name: 'BUILD_ID' }];
+
+  static override flags = {
+    ...EASNonInteractiveFlag,
+    platform: Flags.enum({
+      char: 'p',
+      description: 'Filter builds by the platform if build ID is not provided',
+      options: Object.values(RequestedPlatform),
+    }),
+    profile: Flags.string({
+      char: 'e',
+      description: 'Filter builds by build profile if build ID is not provided',
+      helpValue: 'PROFILE_NAME',
+    }),
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectId,
+    ...this.ContextOptions.LoggedIn,
+    ...this.ContextOptions.Vcs,
+  };
 
   async runAsync(): Promise<void> {
-    const { BUILD_ID: buildIdFromArg } = (await this.parse(BuildCancel)).args;
+    const {
+      args: { BUILD_ID: buildIdFromArg },
+      flags: { 'non-interactive': nonInteractive, platform, profile },
+    } = await this.parse(BuildCancel);
 
-    const projectDir = await findProjectRootAsync();
-    const { exp } = getConfig(projectDir, { skipSDKVersionRequirement: true });
-    const projectId = await getProjectIdAsync(exp);
-    const projectFullName = await getProjectFullNameAsync(exp);
-
-    if (buildIdFromArg) {
-      await ensureBuildExistsAsync(buildIdFromArg);
+    if (buildIdFromArg && (platform || profile)) {
+      throw new Error(
+        'Build ID cannot be used together with platform and profile flags. They are used to filter the list of builds when not providing the build ID'
+      );
     }
 
-    const buildId = buildIdFromArg || (await selectBuildToCancelAsync(projectId, projectFullName));
+    const {
+      projectId,
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(BuildCancel, {
+      nonInteractive,
+    });
+
+    const displayName = await getDisplayNameForProjectIdAsync(graphqlClient, projectId);
+
+    if (buildIdFromArg) {
+      await ensureBuildExistsAsync(graphqlClient, buildIdFromArg);
+    }
+
+    let buildId: string | null = buildIdFromArg;
     if (!buildId) {
-      return;
+      if (nonInteractive) {
+        throw new Error('Build ID must be provided in non-interactive mode');
+      }
+
+      buildId = await selectBuildToCancelAsync(graphqlClient, projectId, displayName, {
+        platform,
+        profile,
+      });
+      if (!buildId) {
+        return;
+      }
     }
 
     const spinner = ora().start('Canceling the build…');
     try {
-      const { status } = await cancelBuildAsync(buildId);
-      if (status === BuildStatus.Canceled) {
+      const { status } = await cancelBuildAsync(graphqlClient, buildId);
+      if ([BuildStatus.Canceled, BuildStatus.PendingCancel].includes(status)) {
         spinner.succeed('Build canceled');
       } else {
         spinner.text = 'Build is already completed';

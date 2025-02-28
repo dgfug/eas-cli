@@ -1,12 +1,18 @@
-import { Android, ArchiveSource, Job, Platform, sanitizeJob } from '@expo/eas-build-job';
+import {
+  Android,
+  ArchiveSource,
+  BuildMode,
+  BuildTrigger,
+  Platform,
+  sanitizeBuildJob,
+} from '@expo/eas-build-job';
 import { BuildProfile } from '@expo/eas-json';
 import path from 'path';
 import slash from 'slash';
 
 import { AndroidCredentials } from '../../credentials/android/AndroidCredentialsProvider';
+import { getCustomBuildConfigPathForJob } from '../../project/customBuildConfig';
 import { getUsername } from '../../project/projectUtils';
-import { ensureLoggedInAsync } from '../../user/actions';
-import { getVcsClient } from '../../vcs';
 import { BuildContext } from '../context';
 
 interface JobData {
@@ -16,18 +22,17 @@ interface JobData {
 
 const cacheDefaults = {
   disabled: false,
-  customPaths: [],
-  cacheDefaultPaths: true,
+  paths: [],
 };
 
 export async function prepareJobAsync(
   ctx: BuildContext<Platform.ANDROID>,
   jobData: JobData
-): Promise<Job> {
-  const username = getUsername(ctx.exp, await ensureLoggedInAsync());
+): Promise<Android.Job> {
+  const username = getUsername(ctx.exp, ctx.user);
   const buildProfile: BuildProfile<Platform.ANDROID> = ctx.buildProfile;
   const projectRootDirectory =
-    slash(path.relative(await getVcsClient().getRootPathAsync(), ctx.projectDir)) || '.';
+    slash(path.relative(await ctx.vcsClient.getRootPathAsync(), ctx.projectDir)) || '.';
   const { credentials } = jobData;
   const buildCredentials = credentials
     ? {
@@ -42,9 +47,22 @@ export async function prepareJobAsync(
       }
     : {};
 
-  let buildType = ctx.buildProfile.buildType;
-  if (!buildType && !buildProfile.gradleCommand && ctx.buildProfile.distribution === 'internal') {
+  let buildType = buildProfile.buildType;
+  if (!buildType && !buildProfile.gradleCommand && buildProfile.distribution === 'internal') {
     buildType = Android.BuildType.APK;
+  }
+
+  const maybeCustomBuildConfigPath = buildProfile.config
+    ? getCustomBuildConfigPathForJob(buildProfile.config)
+    : undefined;
+
+  let buildMode;
+  if (ctx.repack) {
+    buildMode = BuildMode.REPACK;
+  } else if (buildProfile.config) {
+    buildMode = BuildMode.CUSTOM;
+  } else {
+    buildMode = BuildMode.BUILD;
   }
 
   const job: Android.Job = {
@@ -55,9 +73,10 @@ export async function prepareJobAsync(
     builderEnvironment: {
       image: buildProfile.image,
       node: buildProfile.node,
+      pnpm: buildProfile.pnpm,
+      bun: buildProfile.bun,
       yarn: buildProfile.yarn,
       ndk: buildProfile.ndk,
-      expoCli: buildProfile.expoCli,
       env: buildProfile.env,
     },
     cache: {
@@ -68,17 +87,40 @@ export async function prepareJobAsync(
     secrets: {
       ...buildCredentials,
     },
-    releaseChannel: ctx.buildProfile.releaseChannel,
-    updates: { channel: ctx.buildProfile.channel },
+    updates: { channel: buildProfile.channel },
     developmentClient: buildProfile.developmentClient,
     gradleCommand: buildProfile.gradleCommand,
-    artifactPath: buildProfile.artifactPath,
+    applicationArchivePath: buildProfile.applicationArchivePath ?? buildProfile.artifactPath,
+    buildArtifactPaths: buildProfile.buildArtifactPaths,
+    environment: ctx.buildProfile.environment,
     buildType,
     username,
+    ...(ctx.android.versionCodeOverride && {
+      version: {
+        versionCode: ctx.android.versionCodeOverride,
+      },
+    }),
     experimental: {
-      prebuildCommand: ctx.buildProfile.prebuildCommand,
+      prebuildCommand: buildProfile.prebuildCommand,
     },
+    mode: buildMode,
+    triggeredBy: BuildTrigger.EAS_CLI,
+    ...(maybeCustomBuildConfigPath && {
+      customBuildConfig: {
+        path: maybeCustomBuildConfigPath,
+      },
+    }),
+    ...(ctx.repack && {
+      customBuildConfig: {
+        path: '__eas/repack.yml',
+      },
+    }),
+    loggerLevel: ctx.loggerLevel,
+    // Technically, these are unused, but let's include them here for type consistency.
+    // See: https://github.com/expo/eas-build/pull/454
+    appId: ctx.projectId,
+    initiatingUserId: ctx.user.id,
   };
 
-  return sanitizeJob(job);
+  return sanitizeBuildJob(job) as Android.Job;
 }

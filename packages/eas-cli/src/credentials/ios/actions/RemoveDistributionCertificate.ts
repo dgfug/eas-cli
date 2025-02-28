@@ -1,17 +1,17 @@
+import { selectDistributionCertificateWithDependenciesAsync } from './DistributionCertificateUtils';
+import { RemoveProvisioningProfiles } from './RemoveProvisioningProfile';
 import {
+  AccountFragment,
   AppleDistributionCertificateFragment,
   AppleProvisioningProfileIdentifiersFragment,
 } from '../../../graphql/generated';
 import Log from '../../../log';
 import { confirmAsync } from '../../../prompts';
-import { Account } from '../../../user/Account';
 import { CredentialsContext } from '../../context';
-import { AppLookupParams } from '../api/GraphqlClient';
-import { selectDistributionCertificateWithDependenciesAsync } from './DistributionCertificateUtils';
-import { RemoveProvisioningProfiles } from './RemoveProvisioningProfile';
+import { AppLookupParams } from '../api/graphql/types/AppLookupParams';
 
 export class SelectAndRemoveDistributionCertificate {
-  constructor(private account: Account) {}
+  constructor(private readonly account: AccountFragment) {}
 
   async runAsync(ctx: CredentialsContext): Promise<void> {
     const selected = await selectDistributionCertificateWithDependenciesAsync(ctx, this.account);
@@ -25,8 +25,8 @@ export class SelectAndRemoveDistributionCertificate {
 
 export class RemoveDistributionCertificate {
   constructor(
-    private account: Account,
-    private distributionCertificate: AppleDistributionCertificateFragment
+    private readonly account: AccountFragment,
+    private readonly distributionCertificate: AppleDistributionCertificateFragment
   ) {}
 
   public async runAsync(ctx: CredentialsContext): Promise<void> {
@@ -34,14 +34,20 @@ export class RemoveDistributionCertificate {
       buildCredentials => buildCredentials.iosAppCredentials.app
     );
     if (apps.length !== 0) {
-      const appFullNames = apps.map(app => app.fullName).join(',');
+      // iosAppBuildCredentialsList is capped at 20 on www
+      const appFullNames = apps
+        .map(app => app.fullName)
+        .slice(0, 19)
+        .join(',');
+      const andMaybeMore = apps.length > 19 ? ' (and more)' : '';
+
       if (ctx.nonInteractive) {
         throw new Error(
-          `Certificate is currently used by ${appFullNames} and cannot be deleted in non-interactive mode.`
+          `Certificate is currently used by ${appFullNames}${andMaybeMore} and cannot be deleted in non-interactive mode.`
         );
       }
       const confirm = await confirmAsync({
-        message: `You are removing certificate used by ${appFullNames}. Do you want to continue?`,
+        message: `You are removing certificate used by ${appFullNames}${andMaybeMore}. Do you want to continue?`,
       });
       if (!confirm) {
         Log.log('Aborting');
@@ -50,7 +56,10 @@ export class RemoveDistributionCertificate {
     }
 
     Log.log('Removing Distribution Certificate');
-    await ctx.ios.deleteDistributionCertificateAsync(this.distributionCertificate.id);
+    await ctx.ios.deleteDistributionCertificateAsync(
+      ctx.graphqlClient,
+      this.distributionCertificate.id
+    );
 
     if (this.distributionCertificate.developerPortalIdentifier) {
       let shouldRevoke = false;

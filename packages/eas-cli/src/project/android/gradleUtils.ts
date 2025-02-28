@@ -30,7 +30,15 @@ export const DEFAULT_MODULE_NAME = 'app';
 export async function getAppBuildGradleAsync(projectDir: string): Promise<AppBuildGradle> {
   const buildGradlePath = AndroidConfig.Paths.getAppBuildGradleFilePath(projectDir);
   const rawBuildGradle = await fs.readFile(buildGradlePath, 'utf8');
-  return await g2js.parseText(rawBuildGradle);
+
+  // filter out any comments
+  // when comments are present, gradle-to-js fails to parse the file
+  const rawBuildGradleWithoutComments = rawBuildGradle
+    .split('\n')
+    .filter(line => !line.trim().startsWith('//'))
+    .join('\n');
+
+  return await g2js.parseText(rawBuildGradleWithoutComments);
 }
 
 export function resolveConfigValue(
@@ -74,7 +82,7 @@ export function parseGradleCommand(cmd: string, buildGradle: AppBuildGradle): Gr
   const [moduleName, taskName] =
     splitCmd.length > 1 ? [splitCmd[0], splitCmd[1]] : [undefined, splitCmd[0]];
 
-  const matchResult = taskName.match(/(build|bundle|assemble)(.*)(Release|Debug)/);
+  const matchResult = taskName.match(/(build|bundle|assemble|package)(.*)(Release|Debug)/);
   if (!matchResult) {
     throw new Error(`Failed to parse gradle command: ${cmd}`);
   }

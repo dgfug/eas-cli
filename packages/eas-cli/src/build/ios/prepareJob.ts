@@ -1,11 +1,20 @@
-import { ArchiveSource, Ios, Job, Platform, sanitizeJob } from '@expo/eas-build-job';
+import {
+  ArchiveSource,
+  BuildMode,
+  BuildTrigger,
+  Ios,
+  Platform,
+  sanitizeBuildJob,
+} from '@expo/eas-build-job';
+import { BuildProfile } from '@expo/eas-json';
+import nullthrows from 'nullthrows';
 import path from 'path';
 import slash from 'slash';
 
 import { IosCredentials, TargetCredentials } from '../../credentials/ios/types';
+import { IosJobSecretsInput } from '../../graphql/generated';
+import { getCustomBuildConfigPathForJob } from '../../project/customBuildConfig';
 import { getUsername } from '../../project/projectUtils';
-import { ensureLoggedInAsync } from '../../user/actions';
-import { getVcsClient } from '../../vcs';
 import { BuildContext } from '../context';
 
 interface JobData {
@@ -16,23 +25,36 @@ interface JobData {
 
 const cacheDefaults = {
   disabled: false,
-  customPaths: [],
-  cacheDefaultPaths: true,
+  paths: [],
 };
 
 export async function prepareJobAsync(
   ctx: BuildContext<Platform.IOS>,
   jobData: JobData
-): Promise<Job> {
+): Promise<Ios.Job> {
+  const username = getUsername(ctx.exp, ctx.user);
+  const buildProfile: BuildProfile<Platform.IOS> = ctx.buildProfile;
   const projectRootDirectory =
-    slash(path.relative(await getVcsClient().getRootPathAsync(), ctx.projectDir)) || '.';
-  const username = getUsername(ctx.exp, await ensureLoggedInAsync());
-  const buildCredentials: Ios.Job['secrets']['buildCredentials'] = {};
+    slash(path.relative(await ctx.vcsClient.getRootPathAsync(), ctx.projectDir)) || '.';
+  const buildCredentials: Ios.BuildSecrets['buildCredentials'] = {};
   if (jobData.credentials) {
     const targetNames = Object.keys(jobData.credentials);
     for (const targetName of targetNames) {
       buildCredentials[targetName] = prepareTargetCredentials(jobData.credentials[targetName]);
     }
+  }
+
+  const maybeCustomBuildConfigPath = buildProfile.config
+    ? getCustomBuildConfigPathForJob(buildProfile.config)
+    : undefined;
+
+  let buildMode;
+  if (ctx.repack) {
+    buildMode = BuildMode.REPACK;
+  } else if (buildProfile.config) {
+    buildMode = BuildMode.CUSTOM;
+  } else {
+    buildMode = BuildMode.BUILD;
   }
 
   const job: Ios.Job = {
@@ -41,36 +63,76 @@ export async function prepareJobAsync(
     projectArchive: jobData.projectArchive,
     projectRootDirectory,
     builderEnvironment: {
-      image: ctx.buildProfile.image,
-      node: ctx.buildProfile.node,
-      yarn: ctx.buildProfile.yarn,
-      bundler: ctx.buildProfile.bundler,
-      cocoapods: ctx.buildProfile.cocoapods,
-      fastlane: ctx.buildProfile.fastlane,
-      expoCli: ctx.buildProfile.expoCli,
-      env: ctx.buildProfile.env,
+      image: buildProfile.image,
+      node: buildProfile.node,
+      pnpm: buildProfile.pnpm,
+      bun: buildProfile.bun,
+      yarn: buildProfile.yarn,
+      bundler: buildProfile.bundler,
+      cocoapods: buildProfile.cocoapods,
+      fastlane: buildProfile.fastlane,
+      env: buildProfile.env,
     },
     cache: {
       ...cacheDefaults,
-      ...ctx.buildProfile.cache,
+      ...buildProfile.cache,
       clear: ctx.clearCache,
     },
     secrets: {
       buildCredentials,
     },
-    releaseChannel: ctx.buildProfile.releaseChannel,
-    updates: { channel: ctx.buildProfile.channel },
-    developmentClient: ctx.buildProfile.developmentClient,
-    simulator: ctx.buildProfile.simulator,
+    updates: { channel: buildProfile.channel },
+    developmentClient: buildProfile.developmentClient,
+    simulator: buildProfile.simulator,
     scheme: jobData.buildScheme,
-    buildConfiguration: ctx.buildProfile.buildConfiguration,
-    artifactPath: ctx.buildProfile.artifactPath,
+    buildConfiguration: buildProfile.buildConfiguration,
+    applicationArchivePath: buildProfile.applicationArchivePath ?? buildProfile.artifactPath,
+    buildArtifactPaths: buildProfile.buildArtifactPaths,
+    environment: ctx.buildProfile.environment,
     username,
+    ...(ctx.ios.buildNumberOverride && {
+      version: {
+        buildNumber: ctx.ios.buildNumberOverride,
+      },
+    }),
     experimental: {
-      prebuildCommand: ctx.buildProfile.prebuildCommand,
+      prebuildCommand: buildProfile.prebuildCommand,
     },
+    mode: buildMode,
+    triggeredBy: BuildTrigger.EAS_CLI,
+    ...(maybeCustomBuildConfigPath && {
+      customBuildConfig: {
+        path: maybeCustomBuildConfigPath,
+      },
+    }),
+    ...(ctx.repack && {
+      customBuildConfig: {
+        path: '__eas/repack.yml',
+      },
+    }),
+    loggerLevel: ctx.loggerLevel,
+    // Technically, these are unused, but let's include them here for type consistency.
+    // See: https://github.com/expo/eas-build/pull/454
+    appId: ctx.projectId,
+    initiatingUserId: ctx.user.id,
   };
-  return sanitizeJob(job);
+  return sanitizeBuildJob(job) as Ios.Job;
+}
+
+export function prepareCredentialsToResign(credentials: IosCredentials): IosJobSecretsInput {
+  const buildCredentials: IosJobSecretsInput['buildCredentials'] = [];
+  for (const targetName of Object.keys(credentials ?? {})) {
+    buildCredentials.push({
+      targetName,
+      provisioningProfileBase64: nullthrows(credentials?.[targetName].provisioningProfile),
+      distributionCertificate: {
+        dataBase64: nullthrows(credentials?.[targetName].distributionCertificate.certificateP12),
+        password: nullthrows(credentials?.[targetName].distributionCertificate.certificatePassword),
+      },
+    });
+  }
+
+  return { buildCredentials };
 }
 
 function prepareTargetCredentials(targetCredentials: TargetCredentials): Ios.TargetCredentials {

@@ -6,7 +6,7 @@ import { promptAsync } from '../../prompts';
 import { CredentialsContext } from '../context';
 
 export class SelectIosDistributionTypeGraphqlFromBuildProfile {
-  constructor(private buildProfile: BuildProfile<Platform.IOS>) {}
+  constructor(private readonly buildProfile: BuildProfile<Platform.IOS>) {}
 
   async runAsync(ctx: CredentialsContext): Promise<IosDistributionTypeGraphql> {
     const { distribution, simulator } = this.buildProfile;
@@ -15,7 +15,7 @@ export class SelectIosDistributionTypeGraphqlFromBuildProfile {
     } else if (distribution === 'store') {
       return IosDistributionTypeGraphql.AppStore;
     } else {
-      return this.resolveInternalDistributionAsync(ctx);
+      return await this.resolveInternalDistributionAsync(ctx);
     }
   }
 
@@ -45,7 +45,7 @@ export class SelectIosDistributionTypeGraphqlFromBuildProfile {
 
     if (ctx.nonInteractive) {
       throw new Error(
-        'Unable to determine type of internal distribution. Please run this command in interactive mode.'
+        'Unable to determine type of internal distribution. Run this command in interactive mode.'
       );
     }
 

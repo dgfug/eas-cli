@@ -45,12 +45,20 @@ export default class Log {
     Log.warn(`› ${chalk.bold('--' + flag)} flag is deprecated. ${message}`);
   }
 
+  public static fail(message: string): void {
+    Log.log(`${chalk.red(logSymbols.error)} ${message}`);
+  }
+
   public static succeed(message: string): void {
     Log.log(`${chalk.green(logSymbols.success)} ${message}`);
   }
 
   public static withTick(...args: any[]): void {
     Log.consoleLog(chalk.green(figures.tick), ...args);
+  }
+
+  public static withInfo(...args: any[]): void {
+    Log.consoleLog(chalk.green(figures.info), ...args);
   }
 
   private static consoleLog(...args: any[]): void {
@@ -86,15 +94,13 @@ export default class Log {
  */
 export function link(
   url: string,
-  { text = url, dim = true }: { text?: string; dim?: boolean } = {}
+  { text = url, fallback, dim = true }: { text?: string; dim?: boolean; fallback?: string } = {}
 ): string {
-  let output: string;
   // Links can be disabled via env variables https://github.com/jamestalmage/supports-hyperlinks/blob/master/index.js
-  if (terminalLink.isSupported) {
-    output = terminalLink(text, url);
-  } else {
-    output = `${text === url ? '' : text + ': '}${chalk.underline(url)}`;
-  }
+  const output = terminalLink(text, url, {
+    fallback: () =>
+      fallback ?? (text === url ? chalk.underline(url) : `${text}: ${chalk.underline(url)}`),
+  });
   return dim ? chalk.dim(output) : output;
 }
 

@@ -1,0 +1,30 @@
+name: Test scripts
+
+defaults:
+  run:
+    working-directory: scripts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+  pull_request:
+    paths:
+      - 'scripts/**'
+
+concurrency:
+  group: test-scripts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup node
+        uses: actions/setup-node@v2
+        with:
+          node-version: 20
+      - run: yarn install --frozen-lockfile --check-files
+      - run: yarn typecheck

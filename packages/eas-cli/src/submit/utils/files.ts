@@ -1,22 +1,27 @@
 import fs from 'fs-extra';
 
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
 import { UploadSessionType } from '../../graphql/generated';
-import { uploadAsync } from '../../uploads';
+import { uploadFileAtPathToGCSAsync } from '../../uploads';
 import { createProgressTracker } from '../../utils/progress';
 
 export async function isExistingFileAsync(filePath: string): Promise<boolean> {
   try {
     const stats = await fs.stat(filePath);
     return stats.isFile();
-  } catch (e) {
+  } catch {
     return false;
   }
 }
 
-export async function uploadAppArchiveAsync(path: string): Promise<string> {
+export async function uploadAppArchiveAsync(
+  graphqlClient: ExpoGraphqlClient,
+  path: string
+): Promise<string> {
   const fileSize = (await fs.stat(path)).size;
-  const { url } = await uploadAsync(
-    UploadSessionType.EasSubmitAppArchive,
+  const bucketKey = await uploadFileAtPathToGCSAsync(
+    graphqlClient,
+    UploadSessionType.EasSubmitGcsAppArchive,
     path,
     createProgressTracker({
       total: fileSize,
@@ -24,5 +29,5 @@ export async function uploadAppArchiveAsync(path: string): Promise<string> {
       completedMessage: 'Uploaded to EAS Submit',
     })
   );
-  return url;
+  return bucketKey;
 }

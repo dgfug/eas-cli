@@ -37,7 +37,7 @@ export abstract class Client {
   public async commitAsync(_arg: {
     commitMessage: string;
     commitAllFiles?: boolean;
-    nonInteractive?: boolean;
+    nonInteractive: boolean;
   }): Promise<void> {
     // it should not be called unless hasUncommittedChangesAsync is implemented
     throw new Error('commitAsync is not implemented');
@@ -50,6 +50,9 @@ export abstract class Client {
   // (optional) print diff of the changes that will be commited in the next call to
   // `commitAsync({ commitAllFiles: false })`
   public async showDiffAsync(): Promise<void> {}
+
+  /** (optional) print list of changed files */
+  public async showChangedFilesAsync(): Promise<void> {}
 
   // (optional) returns hash of the last commit
   // used for metadata - implementation can be safely skipped
@@ -78,4 +81,10 @@ export abstract class Client {
   public async isFileIgnoredAsync(_filePath: string): Promise<boolean> {
     return false;
   }
+
+  /**
+   * Whether this VCS client can get the last commit message.
+   * Used for EAS Update - implementation can be false for noVcs client.
+   */
+  public abstract canGetLastCommitMessage(): boolean;
 }

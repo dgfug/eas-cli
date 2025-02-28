@@ -1,11 +1,10 @@
-import { GoogleServiceAccountKeyFragment } from '../../../graphql/generated';
+import { AccountFragment, GoogleServiceAccountKeyFragment } from '../../../graphql/generated';
 import Log from '../../../log';
-import { Account } from '../../../user/Account';
 import { CredentialsContext } from '../../context';
 import { selectGoogleServiceAccountKeyAsync } from '../utils/googleServiceAccountKey';
 
 export class UseExistingGoogleServiceAccountKey {
-  constructor(private account: Account) {}
+  constructor(private readonly account: AccountFragment) {}
 
   public async runAsync(ctx: CredentialsContext): Promise<GoogleServiceAccountKeyFragment | null> {
     if (ctx.nonInteractive) {
@@ -14,6 +13,7 @@ export class UseExistingGoogleServiceAccountKey {
       );
     }
     const gsaKeyFragments = await ctx.android.getGoogleServiceAccountKeysForAccountAsync(
+      ctx.graphqlClient,
       this.account
     );
     if (gsaKeyFragments.length === 0) {

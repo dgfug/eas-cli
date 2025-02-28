@@ -1,22 +1,18 @@
-import { getConfig } from '@expo/config';
-import { Flags } from '@oclif/core';
-import chalk from 'chalk';
-import Table from 'cli-table3';
-
+import { selectBranchOnAppAsync } from '../../branch/queries';
 import EasCommand from '../../commandUtils/EasCommand';
-import { UpdateQuery } from '../../graphql/queries/UpdateQuery';
-import Log from '../../log';
-import { findProjectRootAsync, getProjectIdAsync } from '../../project/projectUtils';
-import { promptAsync } from '../../prompts';
-import { UPDATE_COLUMNS, formatUpdate, getPlatformsForGroup } from '../../update/utils';
-import groupBy from '../../utils/expodash/groupBy';
-import formatFields from '../../utils/formatFields';
-import { enableJsonOutput, printJsonOnlyOutput } from '../../utils/json';
+import { EasNonInteractiveAndJsonFlags } from '../../commandUtils/flags';
+import {
+  EasPaginatedQueryFlags,
+  getLimitFlagWithCustomValues,
+  getPaginatedQueryOptions,
+} from '../../commandUtils/pagination';
+import { listAndRenderUpdateGroupsOnBranchAsync } from '../../update/queries';
+import { enableJsonOutput } from '../../utils/json';
 
 export default class BranchView extends EasCommand {
-  static description = 'view a branch';
+  static override description = 'view a branch';
 
-  static args = [
+  static override args = [
     {
       name: 'name',
       required: false,
@@ -24,83 +20,59 @@ export default class BranchView extends EasCommand {
     },
   ];
 
-  static flags = {
-    json: Flags.boolean({
-      description: `return a json with the branch's ID name and recent update groups.`,
-      default: false,
-    }),
+  static override flags = {
+    ...EasPaginatedQueryFlags,
+    ...EasNonInteractiveAndJsonFlags,
+    limit: getLimitFlagWithCustomValues({ defaultTo: 25, limit: 50 }),
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectId,
+    ...this.ContextOptions.LoggedIn,
   };
 
   async runAsync(): Promise<void> {
     let {
-      args: { name },
-      flags: { json: jsonFlag },
+      args: { name: branchName },
+      flags,
     } = await this.parse(BranchView);
-    if (jsonFlag) {
+    const { 'non-interactive': nonInteractive } = flags;
+    const {
+      projectId,
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(BranchView, {
+      nonInteractive,
+    });
+    const paginatedQueryOptions = getPaginatedQueryOptions(flags);
+
+    if (paginatedQueryOptions.json) {
       enableJsonOutput();
     }
 
-    const projectDir = await findProjectRootAsync();
-    const { exp } = getConfig(projectDir, { skipSDKVersionRequirement: true });
-    const projectId = await getProjectIdAsync(exp);
-
-    if (!name) {
-      const validationMessage = 'Branch name may not be empty.';
-      if (jsonFlag) {
-        throw new Error(validationMessage);
+    if (!branchName) {
+      if (nonInteractive) {
+        throw new Error('Branch name may not be empty.');
       }
-      ({ name } = await promptAsync({
-        type: 'text',
-        name: 'name',
-        message: 'Please enter the name of the branch to view:',
-        validate: value => (value ? true : validationMessage),
+
+      ({ name: branchName } = await selectBranchOnAppAsync(graphqlClient, {
+        projectId,
+        promptTitle: 'Which branch would you like to view?',
+        displayTextForListItem: updateBranch => ({
+          title: updateBranch.name,
+        }),
+        // discard limit and offset because this query is not their intended target
+        paginatedQueryOptions: {
+          json: paginatedQueryOptions.json,
+          nonInteractive,
+          offset: 0,
+        },
       }));
     }
 
-    const { app } = await UpdateQuery.viewBranchAsync({
-      appId: projectId,
-      name,
+    await listAndRenderUpdateGroupsOnBranchAsync(graphqlClient, {
+      projectId,
+      branchName,
+      paginatedQueryOptions,
     });
-    const UpdateBranch = app?.byId.updateBranchByName;
-    if (!UpdateBranch) {
-      throw new Error(`Could not find branch "${name}"`);
-    }
-
-    const updates = Object.values(groupBy(UpdateBranch.updates, u => u.group)).map(
-      group => group[0]
-    );
-
-    if (jsonFlag) {
-      printJsonOnlyOutput({ ...UpdateBranch, updates });
-    } else {
-      const groupTable = new Table({
-        head: UPDATE_COLUMNS,
-        wordWrap: true,
-      });
-
-      for (const update of updates) {
-        groupTable.push([
-          formatUpdate(update),
-          update.runtimeVersion,
-          update.group,
-          getPlatformsForGroup({
-            updates: UpdateBranch.updates,
-            group: update.group,
-          }),
-        ]);
-      }
-
-      Log.addNewLineIfNone();
-      Log.log(chalk.bold('Branch:'));
-      Log.log(
-        formatFields([
-          { label: 'Name', value: UpdateBranch.name },
-          { label: 'ID', value: UpdateBranch.id },
-        ])
-      );
-      Log.addNewLineIfNone();
-      Log.log(chalk.bold('Recently published update groups:'));
-      Log.log(groupTable.toString());
-    }
   }
 }

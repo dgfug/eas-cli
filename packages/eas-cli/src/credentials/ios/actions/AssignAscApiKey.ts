@@ -1,15 +1,15 @@
+import { resolveAppleTeamIfAuthenticatedAsync } from './AppleTeamUtils';
+import { AppStoreApiKeyPurpose } from './AscApiKeyUtils';
 import {
   AppStoreConnectApiKeyFragment,
   CommonIosAppCredentialsFragment,
 } from '../../../graphql/generated';
 import Log from '../../../log';
 import { CredentialsContext } from '../../context';
-import { AppLookupParams } from '../api/GraphqlClient';
-import { resolveAppleTeamIfAuthenticatedAsync } from './AppleTeamUtils';
-import { AppStoreApiKeyPurpose } from './AscApiKeyUtils';
+import { AppLookupParams } from '../api/graphql/types/AppLookupParams';
 
 export class AssignAscApiKey {
-  constructor(private app: AppLookupParams) {}
+  constructor(private readonly app: AppLookupParams) {}
 
   public async runAsync(
     ctx: CredentialsContext,
@@ -19,14 +19,19 @@ export class AssignAscApiKey {
     const appleTeam =
       (await resolveAppleTeamIfAuthenticatedAsync(ctx, this.app)) ?? ascApiKey.appleTeam ?? null;
     const appCredentials = await ctx.ios.createOrGetIosAppCredentialsWithCommonFieldsAsync(
+      ctx.graphqlClient,
       this.app,
       { appleTeam: appleTeam ?? undefined }
     );
     let updatedAppCredentials;
     if (purpose === AppStoreApiKeyPurpose.SUBMISSION_SERVICE) {
-      updatedAppCredentials = await ctx.ios.updateIosAppCredentialsAsync(appCredentials, {
-        ascApiKeyIdForSubmissions: ascApiKey.id,
-      });
+      updatedAppCredentials = await ctx.ios.updateIosAppCredentialsAsync(
+        ctx.graphqlClient,
+        appCredentials,
+        {
+          ascApiKeyIdForSubmissions: ascApiKey.id,
+        }
+      );
     } else {
       throw new Error(`${purpose} is not yet supported.`);
     }

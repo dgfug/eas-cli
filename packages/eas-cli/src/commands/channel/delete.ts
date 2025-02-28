@@ -1,146 +1,109 @@
-import { getConfig } from '@expo/config';
-import { Flags } from '@oclif/core';
 import gql from 'graphql-tag';
 
+import { selectChannelOnAppAsync } from '../../channel/queries';
 import EasCommand from '../../commandUtils/EasCommand';
-import { graphqlClient, withErrorHandlingAsync } from '../../graphql/client';
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
+import { EasNonInteractiveAndJsonFlags } from '../../commandUtils/flags';
+import { withErrorHandlingAsync } from '../../graphql/client';
 import {
   DeleteUpdateChannelMutation,
   DeleteUpdateChannelMutationVariables,
   DeleteUpdateChannelResult,
-  GetChannelInfoQuery,
-  GetChannelInfoQueryVariables,
 } from '../../graphql/generated';
+import { ChannelQuery } from '../../graphql/queries/ChannelQuery';
 import Log from '../../log';
-import {
-  findProjectRootAsync,
-  getProjectFullNameAsync,
-  getProjectIdAsync,
-} from '../../project/projectUtils';
-import { promptAsync, toggleConfirmAsync } from '../../prompts';
+import { toggleConfirmAsync } from '../../prompts';
 import { enableJsonOutput, printJsonOnlyOutput } from '../../utils/json';
 
 export default class ChannelDelete extends EasCommand {
-  static hidden = true;
-  static description = 'Delete a channel';
+  static override hidden = true;
+  static override description = 'Delete a channel';
 
-  static args = [
+  static override args = [
     {
       name: 'name',
       required: false,
       description: 'Name of the channel to delete',
     },
   ];
-  static flags = {
-    json: Flags.boolean({
-      description: 'print output as a JSON object',
-      default: false,
-    }),
-    'non-interactive': Flags.boolean({
-      default: false,
-      description: 'Run command in non-interactive mode',
-    }),
+  static override flags = {
+    ...EasNonInteractiveAndJsonFlags,
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectId,
+    ...this.ContextOptions.LoggedIn,
   };
 
   async runAsync(): Promise<void> {
     const {
       args: { name: nameArg },
-      flags: { json: jsonFlag, 'non-interactive': nonInteractiveFlag },
+      flags: { json: jsonFlag, 'non-interactive': nonInteractive },
     } = await this.parse(ChannelDelete);
-    if (jsonFlag && !nonInteractiveFlag) {
-      throw new Error('--json is allowed only in non-interactive mode');
-    }
+    const {
+      projectId,
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(ChannelDelete, {
+      nonInteractive,
+    });
     if (jsonFlag) {
       enableJsonOutput();
     }
 
-    const projectDir = await findProjectRootAsync();
-    const { exp } = getConfig(projectDir, { skipSDKVersionRequirement: true });
-    const fullName = await getProjectFullNameAsync(exp);
-    const projectId = await getProjectIdAsync(exp);
-
-    let name;
+    let channelId, channelName;
     if (nameArg) {
-      name = nameArg;
+      const { id, name } = await ChannelQuery.viewUpdateChannelBasicInfoAsync(graphqlClient, {
+        appId: projectId,
+        channelName: nameArg,
+      });
+      channelId = id;
+      channelName = name;
     } else {
-      if (nonInteractiveFlag) {
+      if (nonInteractive) {
         throw new Error('Channel name must be set when running in non-interactive mode');
       }
-      name = (
-        await promptAsync({
-          type: 'text',
-          name: 'name',
-          message: 'Please enter the name of the channel to delete:',
-          validate: (value: any) => (value ? true : 'Channel name may not be empty.'),
-        })
-      ).name;
+      const { id, name } = await selectChannelOnAppAsync(graphqlClient, {
+        projectId,
+        selectionPromptTitle: 'Select a channel to delete',
+        paginatedQueryOptions: {
+          json: jsonFlag,
+          nonInteractive,
+          offset: 0,
+        },
+      });
+      channelId = id;
+      channelName = name;
     }
 
-    const data = await getChannelInfoAsync({ appId: projectId, name });
-    const channelId = data.app?.byId.updateChannelByName?.id;
-    if (!channelId) {
-      throw new Error(`Could not find channel ${name} on ${fullName}`);
-    }
-
-    if (!nonInteractiveFlag) {
+    if (!nonInteractive) {
       Log.addNewLineIfNone();
       Log.warn(
-        `You are about to permamently delete channel: "${name}".\nThis action is irreversible.`
+        `You are about to permanently delete channel: "${channelName}".\nThis action is irreversible.`
       );
       Log.newLine();
       const confirmed = await toggleConfirmAsync({ message: 'Are you sure you wish to proceed?' });
       if (!confirmed) {
-        Log.error(`Canceled deletion of channel: "${name}".`);
+        Log.error(`Canceled deletion of channel: "${channelName}".`);
         process.exit(1);
       }
     }
 
-    const deletionResult = await deleteChannelOnAppAsync({
+    const deletionResult = await deleteChannelOnAppAsync(graphqlClient, {
       channelId,
     });
 
     if (jsonFlag) {
       printJsonOnlyOutput(deletionResult);
     } else {
-      Log.withTick(`️Deleted channel "${name}".`);
+      Log.withTick(`️Deleted channel "${channelName}".`);
     }
   }
 }
 
-async function getChannelInfoAsync({
-  appId,
-  name,
-}: GetChannelInfoQueryVariables): Promise<GetChannelInfoQuery> {
-  const data = await withErrorHandlingAsync(
-    graphqlClient
-      .query<GetChannelInfoQuery, GetChannelInfoQueryVariables>(
-        gql`
-          query GetChannelInfo($appId: String!, $name: String!) {
-            app {
-              byId(appId: $appId) {
-                id
-                updateChannelByName(name: $name) {
-                  id
-                  name
-                }
-              }
-            }
-          }
-        `,
-        {
-          appId,
-          name,
-        },
-        { additionalTypenames: ['UpdateChannel'] }
-      )
-      .toPromise()
-  );
-  return data;
-}
-
-async function deleteChannelOnAppAsync({
-  channelId,
-}: DeleteUpdateChannelMutationVariables): Promise<DeleteUpdateChannelResult> {
+async function deleteChannelOnAppAsync(
+  graphqlClient: ExpoGraphqlClient,
+  { channelId }: DeleteUpdateChannelMutationVariables
+): Promise<DeleteUpdateChannelResult> {
   const data = await withErrorHandlingAsync(
     graphqlClient
       .mutation<DeleteUpdateChannelMutation, DeleteUpdateChannelMutationVariables>(

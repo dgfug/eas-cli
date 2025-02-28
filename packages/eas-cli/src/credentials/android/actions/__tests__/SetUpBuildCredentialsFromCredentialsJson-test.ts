@@ -1,34 +1,40 @@
 import { vol } from 'memfs';
 
-import { asMock } from '../../../../__tests__/utils';
 import { AndroidKeystoreType } from '../../../../graphql/generated';
+import { AppQuery } from '../../../../graphql/queries/AppQuery';
 import { confirmAsync } from '../../../../prompts';
 import {
   getNewAndroidApiMock,
   testAndroidBuildCredentialsFragment,
   testJksAndroidKeystoreFragment,
 } from '../../../__tests__/fixtures-android';
+import { testAppQueryByIdResponse } from '../../../__tests__/fixtures-constants';
 import { createCtxMock } from '../../../__tests__/fixtures-context';
 import {
   SelectAndroidBuildCredentials,
   SelectAndroidBuildCredentialsResultType,
 } from '../../../manager/SelectAndroidBuildCredentials';
+import { AppLookupParams } from '../../api/GraphqlClient';
 import { getAppLookupParamsFromContextAsync } from '../BuildCredentialsUtils';
 import { SetUpBuildCredentialsFromCredentialsJson } from '../SetUpBuildCredentialsFromCredentialsJson';
 
 jest.mock('fs');
 
 jest.mock('../../../../prompts');
-asMock(confirmAsync).mockImplementation(() => true);
+jest.mocked(confirmAsync).mockImplementation(async () => true);
 jest.mock('../../../manager/SelectAndroidBuildCredentials');
+jest.mock('../../../../graphql/queries/AppQuery');
 
 beforeEach(() => {
   vol.reset();
 });
 
 describe(SetUpBuildCredentialsFromCredentialsJson, () => {
+  beforeEach(() => {
+    jest.mocked(AppQuery.byIdAsync).mockResolvedValue(testAppQueryByIdResponse);
+  });
   it('sets up a new build configuration from credentials.json upon user request', async () => {
-    asMock(SelectAndroidBuildCredentials).mockImplementation(() => {
+    jest.mocked(SelectAndroidBuildCredentials).mockImplementation((() => {
       return {
         runAsync: () => {
           return {
@@ -37,7 +43,7 @@ describe(SetUpBuildCredentialsFromCredentialsJson, () => {
           };
         },
       };
-    });
+    }) as any as (app: AppLookupParams) => SelectAndroidBuildCredentials);
     const ctx = createCtxMock({
       nonInteractive: false,
       android: {
@@ -66,19 +72,23 @@ describe(SetUpBuildCredentialsFromCredentialsJson, () => {
 
     // expect keystore to be created with credentials.json content
     expect(ctx.android.createKeystoreAsync).toHaveBeenCalledTimes(1);
-    expect(ctx.android.createKeystoreAsync).toBeCalledWith(appLookupParams.account, {
-      keystorePassword: testJksAndroidKeystoreFragment.keystorePassword,
-      keyAlias: testJksAndroidKeystoreFragment.keyAlias,
-      keyPassword: testJksAndroidKeystoreFragment.keyPassword,
-      keystore: Buffer.from('some-binary-content').toString('base64'),
-      type: AndroidKeystoreType.Unknown,
-    });
+    expect(ctx.android.createKeystoreAsync).toBeCalledWith(
+      ctx.graphqlClient,
+      appLookupParams.account,
+      {
+        keystorePassword: testJksAndroidKeystoreFragment.keystorePassword,
+        keyAlias: testJksAndroidKeystoreFragment.keyAlias,
+        keyPassword: testJksAndroidKeystoreFragment.keyPassword,
+        keystore: Buffer.from('some-binary-content').toString('base64'),
+        type: AndroidKeystoreType.Unknown,
+      }
+    );
 
     // expect new build credentials to be created
     expect(ctx.android.createAndroidAppBuildCredentialsAsync).toHaveBeenCalledTimes(1);
   });
   it('uses an existing build configuration upon user request', async () => {
-    asMock(SelectAndroidBuildCredentials).mockImplementation(() => {
+    jest.mocked(SelectAndroidBuildCredentials).mockImplementation((() => {
       return {
         runAsync: () => {
           return {
@@ -87,7 +97,7 @@ describe(SetUpBuildCredentialsFromCredentialsJson, () => {
           };
         },
       };
-    });
+    }) as any as (app: AppLookupParams) => SelectAndroidBuildCredentials);
     const ctx = createCtxMock({
       nonInteractive: false,
       android: {
@@ -116,13 +126,17 @@ describe(SetUpBuildCredentialsFromCredentialsJson, () => {
 
     // expect keystore to be created with credentials.json content
     expect(ctx.android.createKeystoreAsync).toHaveBeenCalledTimes(1);
-    expect(ctx.android.createKeystoreAsync).toBeCalledWith(appLookupParams.account, {
-      keystorePassword: testJksAndroidKeystoreFragment.keystorePassword,
-      keyAlias: testJksAndroidKeystoreFragment.keyAlias,
-      keyPassword: testJksAndroidKeystoreFragment.keyPassword,
-      keystore: Buffer.from('some-binary-content').toString('base64'),
-      type: AndroidKeystoreType.Unknown,
-    });
+    expect(ctx.android.createKeystoreAsync).toBeCalledWith(
+      ctx.graphqlClient,
+      appLookupParams.account,
+      {
+        keystorePassword: testJksAndroidKeystoreFragment.keystorePassword,
+        keyAlias: testJksAndroidKeystoreFragment.keyAlias,
+        keyPassword: testJksAndroidKeystoreFragment.keyPassword,
+        keystore: Buffer.from('some-binary-content').toString('base64'),
+        type: AndroidKeystoreType.Unknown,
+      }
+    );
 
     // expect existing build credentials to be updated
     expect(ctx.android.updateAndroidAppBuildCredentialsAsync).toHaveBeenCalledTimes(1);

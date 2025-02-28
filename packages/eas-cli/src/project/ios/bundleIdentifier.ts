@@ -6,25 +6,44 @@ import chalk from 'chalk';
 import fs from 'fs-extra';
 
 import { readAppJson } from '../../build/utils/appJson';
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
+import env from '../../env';
 import Log, { learnMore } from '../../log';
 import { promptAsync } from '../../prompts';
-import { ensureLoggedInAsync } from '../../user/actions';
-import { getProjectConfigDescription, getUsername } from '../projectUtils';
+import { Client } from '../../vcs/vcs';
+import { getOwnerAccountForProjectIdAsync, getProjectConfigDescription } from '../projectUtils';
 import { resolveWorkflowAsync } from '../workflow';
 
 export const INVALID_BUNDLE_IDENTIFIER_MESSAGE = `Invalid format of iOS bundle identifier. Only alphanumeric characters, '.' and '-' are allowed, and each '.' must be followed by a letter.`;
 
-export async function ensureBundleIdentifierIsDefinedForManagedProjectAsync(
-  projectDir: string,
-  exp: ExpoConfig
-): Promise<string> {
-  const workflow = await resolveWorkflowAsync(projectDir, Platform.IOS);
+export async function ensureBundleIdentifierIsDefinedForManagedProjectAsync({
+  graphqlClient,
+  projectDir,
+  projectId,
+  exp,
+  vcsClient,
+  nonInteractive,
+}: {
+  graphqlClient: ExpoGraphqlClient;
+  projectDir: string;
+  projectId: string;
+  exp: ExpoConfig;
+  vcsClient: Client;
+  nonInteractive: boolean;
+}): Promise<string> {
+  const workflow = await resolveWorkflowAsync(projectDir, Platform.IOS, vcsClient);
   assert(workflow === Workflow.MANAGED, 'This function should be called only for managed projects');
 
   try {
-    return await getBundleIdentifierAsync(projectDir, exp);
-  } catch (err) {
-    return await configureBundleIdentifierAsync(projectDir, exp);
+    return await getBundleIdentifierAsync(projectDir, exp, vcsClient);
+  } catch {
+    return await configureBundleIdentifierAsync({
+      graphqlClient,
+      projectDir,
+      exp,
+      projectId,
+      nonInteractive,
+    });
   }
 }
 
@@ -37,9 +56,15 @@ export class AmbiguousBundleIdentifierError extends Error {
 export async function getBundleIdentifierAsync(
   projectDir: string,
   exp: ExpoConfig,
+  vcsClient: Client,
   xcodeContext?: { targetName?: string; buildConfiguration?: string }
 ): Promise<string> {
-  const workflow = await resolveWorkflowAsync(projectDir, Platform.IOS);
+  if (env.overrideIosBundleIdentifier) {
+    return env.overrideIosBundleIdentifier;
+  }
+
+  const workflow = await resolveWorkflowAsync(projectDir, Platform.IOS, vcsClient);
+
   if (workflow === Workflow.GENERIC) {
     warnIfBundleIdentifierDefinedInAppConfigForBareWorkflowProject(projectDir, exp);
 
@@ -99,10 +124,27 @@ export async function getBundleIdentifierAsync(
   }
 }
 
-async function configureBundleIdentifierAsync(
-  projectDir: string,
-  exp: ExpoConfig
-): Promise<string> {
+async function configureBundleIdentifierAsync({
+  graphqlClient,
+  projectDir,
+  projectId,
+  exp,
+  nonInteractive,
+}: {
+  graphqlClient: ExpoGraphqlClient;
+  projectDir: string;
+  projectId: string;
+  exp: ExpoConfig;
+  nonInteractive: boolean;
+}): Promise<string> {
+  if (nonInteractive) {
+    throw new Error(
+      `The "ios.bundleIdentifier" is required to be set in app config when running in non-interactive mode. ${learnMore(
+        'https://docs.expo.dev/versions/latest/config/app/#bundleidentifier'
+      )}`
+    );
+  }
+
   const paths = getConfigFilePaths(projectDir);
   // we can't automatically update app.config.js
   if (paths.dynamicConfigPath) {
@@ -120,7 +162,12 @@ async function configureBundleIdentifierAsync(
     )}`
   );
 
-  const suggestedBundleIdentifier = await getSuggestedBundleIdentifierAsync(exp);
+  const suggestedBundleIdentifier = await getSuggestedBundleIdentifierAsync(
+    graphqlClient,
+    exp,
+    projectId
+  );
+
   const { bundleIdentifier } = await promptAsync({
     name: 'bundleIdentifier',
     type: 'text',
@@ -152,10 +199,10 @@ export function warnIfBundleIdentifierDefinedInAppConfigForBareWorkflowProject(
 ): void {
   if (IOSConfig.BundleIdentifier.getBundleIdentifier(exp) && !warnPrinted) {
     Log.warn(
-      `Specifying "ios.bundleIdentifier" in ${getProjectConfigDescription(
+      `Specified value for "ios.bundleIdentifier" in ${getProjectConfigDescription(
         projectDir
-      )} is deprecated for bare workflow projects.\n` +
-        'EAS Build depends only on the value in the native code. Please remove the deprecated configuration.'
+      )} is ignored because an ${chalk.bold('ios')} directory was detected in the project.\n` +
+        'EAS Build will use the value found in the native code.'
     );
     warnPrinted = true;
   }
@@ -166,15 +213,26 @@ export function isWildcardBundleIdentifier(bundleIdentifier: string): boolean {
   return wildcardRegex.test(bundleIdentifier);
 }
 
-async function getSuggestedBundleIdentifierAsync(exp: ExpoConfig): Promise<string | undefined> {
+async function getSuggestedBundleIdentifierAsync(
+  graphqlClient: ExpoGraphqlClient,
+  exp: ExpoConfig,
+  projectId: string
+): Promise<string | undefined> {
   // Attempt to use the android package name first since it's convenient to have them aligned.
   const maybeAndroidPackage = AndroidConfig.Package.getPackage(exp);
   if (maybeAndroidPackage && isBundleIdentifierValid(maybeAndroidPackage)) {
     return maybeAndroidPackage;
   } else {
-    const username = getUsername(exp, await ensureLoggedInAsync());
+    // the only callsite is heavily interactive
+    const account = await getOwnerAccountForProjectIdAsync(graphqlClient, projectId);
+    let possibleId: string;
     // It's common to use dashes in your node project name, strip them from the suggested package name.
-    const possibleId = `com.${username}.${exp.slug}`.split('-').join('');
+    if (account.name) {
+      possibleId = `com.${account.name}.${exp.slug}`.split('-').join('');
+    } else {
+      possibleId = `com.${exp.slug}`.split('-').join('');
+    }
+
     if (isBundleIdentifierValid(possibleId)) {
       return possibleId;
     }

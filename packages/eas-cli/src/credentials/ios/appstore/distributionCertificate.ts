@@ -5,9 +5,10 @@ import {
   createCertificateAndP12Async,
 } from '@expo/apple-utils';
 
-import { ora } from '../../../ora';
 import { DistributionCertificate, DistributionCertificateStoreInfo } from './Credentials.types';
-import { AuthCtx, getRequestContext } from './authenticate';
+import { getRequestContext } from './authenticate';
+import { AuthCtx } from './authenticateTypes';
+import { ora } from '../../../ora';
 
 export class AppleTooManyCertsError extends Error {}
 
@@ -32,7 +33,7 @@ export async function getDistributionCertificateAsync(
   const certificates = await Certificate.getAsync(context, {
     query: {
       filter: {
-        certificateType: CertificateType.IOS_DISTRIBUTION,
+        certificateType: [CertificateType.IOS_DISTRIBUTION, CertificateType.DISTRIBUTION],
       },
     },
   });

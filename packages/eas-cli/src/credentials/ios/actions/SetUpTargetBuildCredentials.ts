@@ -1,28 +1,30 @@
 import { DistributionType, IosEnterpriseProvisioning } from '@expo/eas-json';
+import { JSONObject } from '@expo/json-file';
 
+import { SetUpAdhocProvisioningProfile } from './SetUpAdhocProvisioningProfile';
+import { SetUpInternalProvisioningProfile } from './SetUpInternalProvisioningProfile';
+import { SetUpProvisioningProfile } from './SetUpProvisioningProfile';
 import {
   IosDistributionType as GraphQLIosDistributionType,
   IosAppBuildCredentialsFragment,
 } from '../../../graphql/generated';
 import Log from '../../../log';
 import { CredentialsContext } from '../../context';
-import { AppLookupParams as GraphQLAppLookupParams } from '../api/GraphqlClient';
-import { IosCapabilitiesOptions } from '../appstore/ensureAppExists';
-import { SetUpAdhocProvisioningProfile } from './SetUpAdhocProvisioningProfile';
-import { SetUpInternalProvisioningProfile } from './SetUpInternalProvisioningProfile';
-import { SetUpProvisioningProfile } from './SetUpProvisioningProfile';
+import { AppLookupParams as GraphQLAppLookupParams } from '../api/graphql/types/AppLookupParams';
+import { Target } from '../types';
 
 interface Options {
   app: GraphQLAppLookupParams;
   distribution: DistributionType;
   enterpriseProvisioning?: IosEnterpriseProvisioning;
-  iosCapabilitiesOptions?: IosCapabilitiesOptions;
+  entitlements: JSONObject;
+  target: Target;
 }
 export class SetUpTargetBuildCredentials {
-  constructor(private options: Options) {}
+  constructor(private readonly options: Options) {}
 
   async runAsync(ctx: CredentialsContext): Promise<IosAppBuildCredentialsFragment> {
-    const { app, iosCapabilitiesOptions } = this.options;
+    const { app, entitlements } = this.options;
 
     await ctx.bestEffortAppStoreAuthenticateAsync();
 
@@ -33,7 +35,7 @@ export class SetUpTargetBuildCredentials {
           bundleIdentifier: app.bundleIdentifier,
           projectName: app.projectName,
         },
-        iosCapabilitiesOptions
+        { entitlements, usesBroadcastPushNotifications: ctx.usesBroadcastPushNotifications }
       );
     }
     try {
@@ -47,22 +49,25 @@ export class SetUpTargetBuildCredentials {
   async setupBuildCredentialsAsync(
     ctx: CredentialsContext
   ): Promise<IosAppBuildCredentialsFragment> {
-    const { app, distribution, enterpriseProvisioning } = this.options;
+    const { app, distribution, enterpriseProvisioning, target } = this.options;
     if (distribution === 'internal') {
       if (enterpriseProvisioning === 'adhoc') {
-        return await new SetUpAdhocProvisioningProfile(app).runAsync(ctx);
+        return await new SetUpAdhocProvisioningProfile({ app, target }).runAsync(ctx);
       } else if (enterpriseProvisioning === 'universal') {
         return await new SetUpProvisioningProfile(
           app,
+          target,
           GraphQLIosDistributionType.Enterprise
         ).runAsync(ctx);
       } else {
-        return await new SetUpInternalProvisioningProfile(app).runAsync(ctx);
+        return await new SetUpInternalProvisioningProfile({ app, target }).runAsync(ctx);
       }
     } else {
-      return await new SetUpProvisioningProfile(app, GraphQLIosDistributionType.AppStore).runAsync(
-        ctx
-      );
+      return await new SetUpProvisioningProfile(
+        app,
+        target,
+        GraphQLIosDistributionType.AppStore
+      ).runAsync(ctx);
     }
   }
 }

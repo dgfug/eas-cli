@@ -1,10 +1,16 @@
-import { Android, Job, Metadata, Platform, Workflow } from '@expo/eas-build-job';
+import { Android, Metadata, Platform, Workflow } from '@expo/eas-build-job';
+import { AppVersionSource } from '@expo/eas-json';
 import chalk from 'chalk';
 import nullthrows from 'nullthrows';
 
+import { transformJob } from './graphql';
+import { prepareJobAsync } from './prepareJob';
+import { syncProjectConfigurationAsync } from './syncProjectConfiguration';
+import { resolveRemoteVersionCodeAsync } from './version';
 import AndroidCredentialsProvider, {
   AndroidCredentials,
 } from '../../credentials/android/AndroidCredentialsProvider';
+import { BuildParamsInput } from '../../graphql/generated';
 import { BuildMutation, BuildResult } from '../../graphql/mutations/BuildMutation';
 import Log from '../../log';
 import {
@@ -13,7 +19,6 @@ import {
 } from '../../project/android/applicationId';
 import { resolveGradleBuildContextAsync } from '../../project/android/gradle';
 import { toggleConfirmAsync } from '../../prompts';
-import { findAccountByName } from '../../user/Account';
 import {
   BuildRequestSender,
   CredentialsResult,
@@ -23,10 +28,11 @@ import {
 import { AndroidBuildContext, BuildContext, CommonContext } from '../context';
 import { transformMetadata } from '../graphql';
 import { logCredentialsSource } from '../utils/credentials';
-import { checkGoogleServicesFileAsync, checkNodeEnvVariable } from '../validate';
-import { transformJob } from './graphql';
-import { prepareJobAsync } from './prepareJob';
-import { syncProjectConfigurationAsync } from './syncProjectConfiguration';
+import {
+  checkGoogleServicesFileAsync,
+  checkNodeEnvVariable,
+  validatePNGsForManagedProjectAsync,
+} from '../validate';
 
 export async function createAndroidContextAsync(
   ctx: CommonContext<Platform.ANDROID>
@@ -44,23 +50,44 @@ This means that it will most likely produce an AAB and you will not be able to i
     Log.newLine();
     const confirmed = await toggleConfirmAsync({ message: 'Would you like to proceed?' });
     if (!confirmed) {
-      Log.error('Please update eas.json and come back again.');
+      Log.error('Update eas.json and come back again.');
       process.exit(1);
     }
   }
 
   checkNodeEnvVariable(ctx);
   await checkGoogleServicesFileAsync(ctx);
+  await validatePNGsForManagedProjectAsync(ctx);
 
-  const gradleContext = await resolveGradleBuildContextAsync(ctx.projectDir, buildProfile);
+  const gradleContext = await resolveGradleBuildContextAsync(
+    ctx.projectDir,
+    buildProfile,
+    ctx.vcsClient
+  );
 
   if (ctx.workflow === Workflow.MANAGED) {
-    await ensureApplicationIdIsDefinedForManagedProjectAsync(ctx.projectDir, ctx.exp);
+    await ensureApplicationIdIsDefinedForManagedProjectAsync(ctx);
   }
 
-  const applicationId = await getApplicationIdAsync(ctx.projectDir, ctx.exp, gradleContext);
+  const applicationId = await getApplicationIdAsync(
+    ctx.projectDir,
+    ctx.exp,
+    ctx.vcsClient,
+    gradleContext
+  );
+  const versionCodeOverride =
+    ctx.easJsonCliConfig?.appVersionSource === AppVersionSource.REMOTE
+      ? await resolveRemoteVersionCodeAsync(ctx.graphqlClient, {
+          projectDir: ctx.projectDir,
+          projectId: ctx.projectId,
+          exp: ctx.exp,
+          applicationId,
+          buildProfile,
+          vcsClient: ctx.vcsClient,
+        })
+      : undefined;
 
-  return { applicationId, gradleContext };
+  return { applicationId, gradleContext, versionCodeOverride };
 }
 
 export async function prepareAndroidBuildAsync(
@@ -75,26 +102,33 @@ export async function prepareAndroidBuildAsync(
       await syncProjectConfigurationAsync({
         projectDir: ctx.projectDir,
         exp: ctx.exp,
-        buildProfile: ctx.buildProfile,
+        localAutoIncrement:
+          ctx.easJsonCliConfig?.appVersionSource === AppVersionSource.REMOTE
+            ? false
+            : ctx.buildProfile.autoIncrement,
+        vcsClient: ctx.vcsClient,
+        env: ctx.env,
       });
     },
     prepareJobAsync: async (
       ctx: BuildContext<Platform.ANDROID>,
       jobData: JobData<AndroidCredentials>
-    ): Promise<Job> => {
+    ): Promise<Android.Job> => {
       return await prepareJobAsync(ctx, jobData);
     },
     sendBuildRequestAsync: async (
       appId: string,
       job: Android.Job,
-      metadata: Metadata
+      metadata: Metadata,
+      buildParams: BuildParamsInput
     ): Promise<BuildResult> => {
       const graphqlMetadata = transformMetadata(metadata);
       const graphqlJob = transformJob(job);
-      return await BuildMutation.createAndroidBuildAsync({
+      return await BuildMutation.createAndroidBuildAsync(ctx.graphqlClient, {
         appId,
         job: graphqlJob,
         metadata: graphqlMetadata,
+        buildParams,
       });
     },
   });
@@ -113,12 +147,14 @@ async function ensureAndroidCredentialsAsync(
   const androidApplicationIdentifier = await getApplicationIdAsync(
     ctx.projectDir,
     ctx.exp,
+    ctx.vcsClient,
     ctx.android.gradleContext
   );
   const provider = new AndroidCredentialsProvider(ctx.credentialsCtx, {
+    name: ctx.buildProfile.keystoreName,
     app: {
       account: nullthrows(
-        findAccountByName(ctx.user.accounts, ctx.accountName),
+        ctx.user.accounts.find(a => a.name === ctx.accountName),
         `You do not have access to account: ${ctx.accountName}`
       ),
       projectName: ctx.projectName,

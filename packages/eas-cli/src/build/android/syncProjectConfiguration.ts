@@ -1,34 +1,38 @@
 import { ExpoConfig } from '@expo/config';
 import { AndroidConfig } from '@expo/config-plugins';
-import { Platform, Workflow } from '@expo/eas-build-job';
-import { AndroidVersionAutoIncrement, BuildProfile } from '@expo/eas-json';
+import { Env, Platform, Workflow } from '@expo/eas-build-job';
+import { AndroidVersionAutoIncrement } from '@expo/eas-json';
 import chalk from 'chalk';
 import fs from 'fs-extra';
 import path from 'path';
 
+import { BumpStrategy, bumpVersionAsync, bumpVersionInAppJsonAsync } from './version';
 import Log from '../../log';
 import { isExpoUpdatesInstalled } from '../../project/projectUtils';
 import { resolveWorkflowAsync } from '../../project/workflow';
 import { syncUpdatesConfigurationAsync } from '../../update/android/UpdatesModule';
-import { BumpStrategy, bumpVersionAsync, bumpVersionInAppJsonAsync } from './version';
+import { Client } from '../../vcs/vcs';
 
 export async function syncProjectConfigurationAsync({
   projectDir,
   exp,
-  buildProfile,
+  localAutoIncrement,
+  vcsClient,
+  env,
 }: {
   projectDir: string;
   exp: ExpoConfig;
-  buildProfile: BuildProfile<Platform.ANDROID>;
+  localAutoIncrement?: AndroidVersionAutoIncrement;
+  vcsClient: Client;
+  env: Env | undefined;
 }): Promise<void> {
-  const workflow = await resolveWorkflowAsync(projectDir, Platform.ANDROID);
-  const { autoIncrement } = buildProfile;
-  const versionBumpStrategy = resolveVersionBumpStrategy(autoIncrement ?? false);
+  const workflow = await resolveWorkflowAsync(projectDir, Platform.ANDROID, vcsClient);
+  const versionBumpStrategy = resolveVersionBumpStrategy(localAutoIncrement ?? false);
 
   if (workflow === Workflow.GENERIC) {
     await cleanUpOldEasBuildGradleScriptAsync(projectDir);
     if (isExpoUpdatesInstalled(projectDir)) {
-      await syncUpdatesConfigurationAsync(projectDir, exp);
+      await syncUpdatesConfigurationAsync({ projectDir, exp, workflow, env });
     }
     await bumpVersionAsync({ projectDir, exp, bumpStrategy: versionBumpStrategy });
   } else {

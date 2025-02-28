@@ -20,6 +20,7 @@ export interface AndroidSubmitProfile {
   releaseStatus: AndroidReleaseStatus;
   changesNotSentForReview: boolean;
   applicationId?: string;
+  rollout?: number;
 }
 
 export const AndroidSubmitProfileFieldsToEvaluate: (keyof AndroidSubmitProfile)[] = [
@@ -38,6 +39,7 @@ export interface IosSubmitProfile {
   companyName?: string;
   appName?: string;
   bundleIdentifier?: string;
+  metadataPath?: string;
 }
 
 export const IosSubmitProfileFieldsToEvaluate: (keyof IosSubmitProfile)[] = [

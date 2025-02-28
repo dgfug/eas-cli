@@ -1,246 +1,179 @@
 import { Device, DeviceStatus } from '@expo/apple-utils';
-import { getConfig } from '@expo/config';
 import { Flags } from '@oclif/core';
 import assert from 'assert';
 
 import EasCommand from '../../commandUtils/EasCommand';
-import { chooseDevicesToDeleteAsync } from '../../credentials/ios/actions/DeviceUtils';
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
+import { EasNonInteractiveAndJsonFlags } from '../../commandUtils/flags';
+import { PaginatedQueryOptions, getPaginatedQueryOptions } from '../../commandUtils/pagination';
 import { AppleDeviceMutation } from '../../credentials/ios/api/graphql/mutations/AppleDeviceMutation';
 import {
   AppleDeviceQuery,
   AppleDeviceQueryResult,
-  AppleDevicesByTeamIdentifierQueryResult,
 } from '../../credentials/ios/api/graphql/queries/AppleDeviceQuery';
-import { AppleTeamQuery } from '../../credentials/ios/api/graphql/queries/AppleTeamQuery';
 import { authenticateAsync, getRequestContext } from '../../credentials/ios/appstore/authenticate';
+import {
+  selectAppleDeviceOnAppleTeamAsync,
+  selectAppleTeamOnAccountAsync,
+} from '../../devices/queries';
 import formatDevice from '../../devices/utils/formatDevice';
 import { AppleDevice, Maybe } from '../../graphql/generated';
 import Log from '../../log';
 import { ora } from '../../ora';
-import { findProjectRootAsync, getProjectAccountNameAsync } from '../../project/projectUtils';
-import { promptAsync, toggleConfirmAsync } from '../../prompts';
+import { getOwnerAccountForProjectIdAsync } from '../../project/projectUtils';
+import { toggleConfirmAsync } from '../../prompts';
+import { enableJsonOutput, printJsonOnlyOutput } from '../../utils/json';
 
 export default class DeviceDelete extends EasCommand {
-  static description = 'remove a registered device from your account';
+  static override description = 'remove a registered device from your account';
 
-  static flags = {
-    'apple-team-id': Flags.string(),
-    udid: Flags.string({ multiple: true }),
+  static override flags = {
+    'apple-team-id': Flags.string({ description: 'The Apple team ID on which to find the device' }),
+    udid: Flags.string({ description: 'The Apple device ID to disable' }),
+    ...EasNonInteractiveAndJsonFlags,
+  };
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectId,
+    ...this.ContextOptions.LoggedIn,
   };
 
   async runAsync(): Promise<void> {
-    let {
-      flags: { 'apple-team-id': appleTeamIdentifier, udid: udids },
-    } = await this.parse(DeviceDelete);
+    const { flags } = await this.parse(DeviceDelete);
+    const paginatedQueryOptions = getPaginatedQueryOptions(flags);
+    let { 'apple-team-id': appleTeamIdentifier, udid } = flags;
+    const {
+      projectId,
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(DeviceDelete, {
+      nonInteractive: paginatedQueryOptions.nonInteractive,
+    });
+    const account = await getOwnerAccountForProjectIdAsync(graphqlClient, projectId);
+    let appleTeamName;
 
-    const projectDir = await findProjectRootAsync();
-    const { exp } = getConfig(projectDir, { skipSDKVersionRequirement: true });
-    const accountName = await getProjectAccountNameAsync(exp);
+    if (paginatedQueryOptions.json) {
+      enableJsonOutput();
+    }
 
     if (!appleTeamIdentifier) {
-      appleTeamIdentifier = await this.askForAppleTeamAsync(accountName);
+      const appleTeam = await selectAppleTeamOnAccountAsync(graphqlClient, {
+        accountName: account.name,
+        selectionPromptTitle: `What Apple team would you like to list devices for?`,
+        paginatedQueryOptions,
+      });
+      appleTeamIdentifier = appleTeam.appleTeamIdentifier;
+      appleTeamName = appleTeam.appleTeamName;
     }
 
     assert(appleTeamIdentifier, 'No team identifier is specified');
 
-    const appleDevicesResult = await this.getDevicesForTeamAsync(accountName, appleTeamIdentifier);
+    const chosenDevice = udid
+      ? await AppleDeviceQuery.getByDeviceIdentifierAsync(graphqlClient, account.name, udid)
+      : await selectAppleDeviceOnAppleTeamAsync(graphqlClient, {
+          accountName: account.name,
+          appleTeamIdentifier,
+          selectionPromptTitle: `Which device would you like to disable?`,
+          paginatedQueryOptions,
+        });
 
-    if (!appleDevicesResult) {
+    this.logChosenDevice(chosenDevice, appleTeamName, appleTeamIdentifier, paginatedQueryOptions);
+
+    if (!(await this.shouldRemoveDeviceFromExpoAsync(paginatedQueryOptions))) {
       return;
     }
 
-    const { appleTeamName, appleDevices } = appleDevicesResult;
+    await this.removeDeviceFromExpoAsync(graphqlClient, chosenDevice);
 
-    const chosenDevices = await this.chooseDevicesToDeleteAsync(appleDevices, udids);
-
-    if (chosenDevices.length === 0) {
-      Log.newLine();
-      Log.warn('No devices were chosen to be removed.');
-      return;
+    if (await this.shouldDisableDeviceOnAppleAsync(paginatedQueryOptions)) {
+      await this.disableDeviceOnAppleAsync(chosenDevice, appleTeamIdentifier);
     }
-
-    this.logChosenDevices(chosenDevices, appleTeamName, appleTeamIdentifier);
-
-    const hasRemoved = await this.askAndRemoveFromExpoAsync(chosenDevices);
-
-    if (!hasRemoved) {
-      return;
-    }
-
-    await this.askAndDisableOnAppleAsync(chosenDevices, appleTeamIdentifier);
   }
 
-  async askAndDisableOnAppleAsync(
-    chosenDevices: (AppleDevice | AppleDeviceQueryResult)[],
+  async shouldDisableDeviceOnAppleAsync({
+    nonInteractive,
+  }: PaginatedQueryOptions): Promise<boolean> {
+    if (!nonInteractive) {
+      Log.newLine();
+      return await toggleConfirmAsync({
+        message: 'Do you want to disable this device on your Apple account as well?',
+      });
+    }
+    return true;
+  }
+
+  async disableDeviceOnAppleAsync(
+    device: AppleDevice | AppleDeviceQueryResult,
     appleTeamIdentifier: string
   ): Promise<void> {
-    Log.newLine();
-    const deleteOnApple = await toggleConfirmAsync({
-      message: 'Do you want to disable these devices on your Apple account as well?',
-    });
-
-    if (!deleteOnApple) {
-      return;
-    }
-
     const ctx = await authenticateAsync({ teamId: appleTeamIdentifier });
     const context = getRequestContext(ctx);
 
     Log.addNewLineIfNone();
-    const removeAppleSpinner = ora('Disabling devices on Apple').start();
+    const removeAppleSpinner = ora('Disabling device on Apple').start();
     try {
-      let realDevices = await Device.getAllIOSProfileDevicesAsync(context);
-      realDevices = realDevices.filter(d =>
-        chosenDevices.map(cd => cd.identifier).includes(d.attributes.udid)
+      const appleValidatedDevices = await Device.getAsync(context);
+      const appleValidatedDevice = appleValidatedDevices.find(
+        d => d.attributes.udid === device.identifier
       );
-
-      for (const device of realDevices) {
-        await device.updateAsync({ status: DeviceStatus.DISABLED });
+      if (appleValidatedDevice) {
+        await appleValidatedDevice.updateAsync({ status: DeviceStatus.DISABLED });
+        removeAppleSpinner.succeed('Disabled device on Apple');
+      } else {
+        removeAppleSpinner.warn(
+          'Device not found on Apple Developer Portal. Expo-registered devices will not appear there until they are chosen for an internal distribution build.'
+        );
       }
-
-      removeAppleSpinner.succeed('Disabled devices on Apple');
     } catch (err) {
       removeAppleSpinner.fail();
       throw err;
     }
   }
 
-  async askAndRemoveFromExpoAsync(
-    chosenDevices: (AppleDevice | AppleDeviceQueryResult)[]
-  ): Promise<boolean> {
-    Log.warn(
-      `You are about to remove the Apple device${
-        chosenDevices.length > 1 ? 's' : ''
-      } listed above from your Expo account.`
-    );
-    Log.newLine();
+  async shouldRemoveDeviceFromExpoAsync({
+    nonInteractive,
+  }: PaginatedQueryOptions): Promise<boolean> {
+    if (!nonInteractive) {
+      Log.warn(`You are about to remove the Apple device listed above from your Expo account.`);
+      Log.newLine();
 
-    const confirmed = await toggleConfirmAsync({
-      message: 'Are you sure you wish to proceed?',
-    });
-
-    if (confirmed) {
-      const removalSpinner = ora(`Removing Apple devices on Expo`).start();
-      try {
-        for (const chosenDevice of chosenDevices) {
-          await AppleDeviceMutation.deleteAppleDeviceAsync(chosenDevice.id);
-        }
-        removalSpinner.succeed('Removed Apple devices from Expo');
-      } catch (err) {
-        removalSpinner.fail();
-        throw err;
-      }
+      return await toggleConfirmAsync({
+        message: 'Are you sure you wish to proceed?',
+      });
     }
-
-    return confirmed;
+    return true;
   }
 
-  logChosenDevices(
-    chosenDevices: (AppleDevice | AppleDeviceQueryResult)[],
+  async removeDeviceFromExpoAsync(
+    graphqlClient: ExpoGraphqlClient,
+    chosenDevice: AppleDevice | AppleDeviceQueryResult
+  ): Promise<void> {
+    const removalSpinner = ora(`Removing Apple device on EAS`).start();
+    try {
+      await AppleDeviceMutation.deleteAppleDeviceAsync(graphqlClient, chosenDevice.id);
+      removalSpinner.succeed('Removed Apple device from EAS');
+    } catch (err) {
+      removalSpinner.fail();
+      throw err;
+    }
+  }
+
+  logChosenDevice(
+    device: AppleDevice | AppleDeviceQueryResult,
     appleTeamName: Maybe<string> | undefined,
-    appleTeamIdentifier: string
+    appleTeamIdentifier: string,
+    { json }: PaginatedQueryOptions
   ): void {
-    Log.addNewLineIfNone();
-    chosenDevices.forEach(device => {
+    if (json) {
+      printJsonOnlyOutput(device);
+    } else {
+      Log.addNewLineIfNone();
       Log.log(
         formatDevice(device, {
           appleTeamName,
-          appleTeamIdentifier: appleTeamIdentifier!,
+          appleTeamIdentifier,
         })
       );
       Log.newLine();
-    });
-  }
-
-  async chooseDevicesToDeleteAsync(
-    appleDevices: AppleDeviceQueryResult[],
-    udids: string[]
-  ): Promise<(AppleDevice | AppleDeviceQueryResult)[]> {
-    let chosenDevices: (AppleDeviceQueryResult | AppleDevice)[] = [];
-    Log.newLine();
-    if (udids) {
-      udids.forEach(udid => {
-        const foundDevice = appleDevices.find(device => device.identifier === udid);
-        if (foundDevice) {
-          chosenDevices.push(foundDevice);
-        } else {
-          Log.warn(`No device found with UDID ${udid}.`);
-        }
-      });
-    }
-
-    if (chosenDevices.length === 0) {
-      Log.addNewLineIfNone();
-      chosenDevices = await chooseDevicesToDeleteAsync(appleDevices);
-      Log.newLine();
-    }
-
-    return chosenDevices;
-  }
-
-  async getDevicesForTeamAsync(
-    accountName: string,
-    appleTeamIdentifier: string
-  ): Promise<AppleDevicesByTeamIdentifierQueryResult | undefined> {
-    const devicesSpinner = ora().start('Fetching the list of devices for the team…');
-
-    try {
-      const result = await AppleDeviceQuery.getAllForAppleTeamAsync(
-        accountName,
-        appleTeamIdentifier
-      );
-
-      if (result?.appleDevices.length) {
-        const { appleTeamName, appleDevices } = result;
-
-        devicesSpinner.succeed(
-          `Found ${appleDevices.length} devices for team ${appleTeamName ?? appleTeamIdentifier}`
-        );
-
-        return result;
-      } else {
-        devicesSpinner.fail(`Couldn't find any devices for the team ${appleTeamIdentifier}`);
-        return;
-      }
-    } catch (e) {
-      devicesSpinner.fail(`Something went wrong and we couldn't fetch the device list`);
-      throw e;
-    }
-  }
-
-  async askForAppleTeamAsync(accountName: string): Promise<string | undefined> {
-    const teamSpinner = ora().start('Fetching the list of teams for the project…');
-
-    try {
-      const teams = await AppleTeamQuery.getAllForAccountAsync(accountName);
-
-      if (teams.length > 0) {
-        teamSpinner.succeed('Fetched the list of teams for the project');
-
-        if (teams.length === 1) {
-          return teams[0].appleTeamIdentifier;
-        }
-
-        const result = await promptAsync({
-          type: 'select',
-          name: 'appleTeamIdentifier',
-          message: 'What Apple Team would you like to list devices for?',
-          choices: teams.map(team => ({
-            title: team.appleTeamName
-              ? `${team.appleTeamName} (ID: ${team.appleTeamIdentifier})`
-              : team.appleTeamIdentifier,
-            value: team.appleTeamIdentifier,
-          })),
-        });
-
-        return result.appleTeamIdentifier;
-      } else {
-        teamSpinner.fail(`Couldn't find any teams for the account ${accountName}`);
-        return;
-      }
-    } catch (e) {
-      teamSpinner.fail(`Something went wrong and we couldn't fetch the list of teams`);
-      throw e;
     }
   }
 }

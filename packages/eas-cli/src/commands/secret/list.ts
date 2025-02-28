@@ -1,43 +1,48 @@
-import { getConfig } from '@expo/config';
 import chalk from 'chalk';
-import Table from 'cli-table3';
 import dateFormat from 'dateformat';
 
 import EasCommand from '../../commandUtils/EasCommand';
-import { EnvironmentSecretsQuery } from '../../graphql/queries/EnvironmentSecretsQuery';
-import Log from '../../log';
 import {
-  findProjectRootAsync,
-  getProjectAccountNameAsync,
-  getProjectIdAsync,
-} from '../../project/projectUtils';
+  EnvironmentSecretWithScope,
+  EnvironmentSecretsQuery,
+} from '../../graphql/queries/EnvironmentSecretsQuery';
+import Log from '../../log';
+import formatFields from '../../utils/formatFields';
 
 export default class EnvironmentSecretList extends EasCommand {
-  static description = 'list environment secrets available for your current app';
+  static override description = 'list environment secrets available for your current app';
+  static override hidden = true;
+
+  static override contextDefinition = {
+    ...this.ContextOptions.ProjectId,
+    ...this.ContextOptions.LoggedIn,
+  };
 
   async runAsync(): Promise<void> {
-    const projectDir = await findProjectRootAsync();
-    const { exp } = getConfig(projectDir, { skipSDKVersionRequirement: true });
-    const projectId = await getProjectIdAsync(exp);
-    const projectAccountName = await getProjectAccountNameAsync(exp);
+    Log.warn('This command is deprecated. Use eas env:list instead.');
+    Log.newLine();
 
-    if (!projectDir) {
-      throw new Error("Please run this command inside your project's directory");
-    }
-
-    const secrets = await EnvironmentSecretsQuery.allAsync(projectAccountName, projectId);
-
-    const table = new Table({
-      head: ['Name', 'Scope', 'ID', 'Updated at'],
-      wordWrap: true,
+    const {
+      projectId,
+      loggedIn: { graphqlClient },
+    } = await this.getContextAsync(EnvironmentSecretList, {
+      nonInteractive: true,
     });
 
-    for (const secret of secrets) {
-      const { name, createdAt: updatedAt, scope, id } = secret;
-      table.push([name, scope, id, dateFormat(updatedAt, 'mmm dd HH:MM:ss')]);
-    }
+    const secrets = await EnvironmentSecretsQuery.allAsync(graphqlClient, projectId);
 
     Log.log(chalk`{bold Secrets for this account and project:}`);
-    Log.log(table.toString());
+    Log.log(secrets.map(secret => formatSecret(secret)).join(`\n\n${chalk.dim('———')}\n\n`));
   }
+}
+
+function formatSecret(secret: EnvironmentSecretWithScope): string {
+  return formatFields([
+    { label: 'ID', value: secret.id },
+    { label: 'Name', value: secret.name },
+    { label: 'Scope', value: secret.scope },
+    { label: 'Type', value: secret.type },
+    // TODO: Figure out why do we name it updated, while it's created at?
+    { label: 'Updated at', value: dateFormat(secret.createdAt, 'mmm dd HH:MM:ss') },
+  ]);
 }

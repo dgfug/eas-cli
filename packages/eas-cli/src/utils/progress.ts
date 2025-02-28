@@ -1,7 +1,8 @@
 import chalk from 'chalk';
+import { randomUUID } from 'node:crypto';
 
-import { Ora, ora } from '../ora';
 import { endTimer, formatMilliseconds, startTimer } from './timer';
+import { Ora, ora } from '../ora';
 
 export type Progress = {
   total: number;
@@ -21,7 +22,7 @@ export function createProgressTracker({
   completedMessage,
 }: {
   total?: number;
-  message: string | ((ratio: number) => string);
+  message: string | ((ratio: number, total: number) => string);
   completedMessage: string | ((duration: string) => string);
 }): ProgressHandler {
   let bar: Ora | null = null;
@@ -29,19 +30,21 @@ export function createProgressTracker({
   let transferredSoFar = 0;
   let current = 0;
 
-  const timerLabel = String(Date.now());
+  const timerLabel = String(randomUUID());
 
-  const getMessage = (v: number): string => {
+  const getMessage = (v: number, total: number): string => {
     const ratio = Math.min(Math.max(v, 0), 1);
     const percent = Math.floor(ratio * 100);
-    return typeof message === 'string' ? `${message} ${percent.toFixed(0)}%` : message(ratio);
+    return typeof message === 'string'
+      ? `${message} ${percent.toFixed(0)}%`
+      : message(ratio, total);
   };
 
   return ({ progress, isComplete, error }) => {
     if (progress) {
       if (!bar && (progress.total !== undefined || total !== undefined)) {
-        calcTotal = (total ?? progress.total) as number;
-        bar = ora(getMessage(0)).start();
+        calcTotal = total ?? progress.total;
+        bar = ora(getMessage(0, calcTotal)).start();
         startTimer(timerLabel);
       }
       if (progress.total) {
@@ -56,7 +59,7 @@ export function createProgressTracker({
           percentage = current / calcTotal;
         }
 
-        bar.text = getMessage(percentage);
+        bar.text = getMessage(percentage, calcTotal);
       }
       transferredSoFar = progress.transferred;
     }

@@ -1,5 +1,6 @@
 import nullthrows from 'nullthrows';
 
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
 import { AppPlatform, SubmissionFragment, SubmissionStatus } from '../../graphql/generated';
 import { SubmissionQuery } from '../../graphql/queries/SubmissionQuery';
 import Log from '../../log';
@@ -11,10 +12,10 @@ const APP_STORE_NAMES: Record<AppPlatform, string> = {
   [AppPlatform.Ios]: 'Apple App Store Connect',
 };
 
-const CHECK_TIMEOUT_MS = 3600_000;
 const CHECK_INTERVAL_MS = 5_000;
 
 export async function waitForSubmissionsEndAsync(
+  graphqlClient: ExpoGraphqlClient,
   initialSubmissions: SubmissionFragment[]
 ): Promise<SubmissionFragment[]> {
   Log.log(
@@ -25,13 +26,11 @@ export async function waitForSubmissionsEndAsync(
 
   const spinner = ora(`Submitting`).start();
 
-  let time = new Date().getTime();
-  const timeoutTime = time + CHECK_TIMEOUT_MS;
-  while (time <= timeoutTime) {
+  while (true) {
     const submissions = await Promise.all(
       initialSubmissions.map(({ id }) => {
         try {
-          return SubmissionQuery.byIdAsync(id, { useCache: false });
+          return SubmissionQuery.byIdAsync(graphqlClient, id, { useCache: false });
         } catch (err) {
           Log.debug('Failed to fetch the submission status', err);
           return null;
@@ -76,11 +75,8 @@ export async function waitForSubmissionsEndAsync(
       }
     }
 
-    time = new Date().getTime();
     await sleepAsync(CHECK_INTERVAL_MS);
   }
-  spinner.warn('Timed out');
-  throw new Error('Timeout reached! It is taking longer than expected to complete, aborting...');
 }
 
 function getSingleSpinnerText(submission: SubmissionFragment): string {

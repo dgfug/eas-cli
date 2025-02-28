@@ -1,4 +1,10 @@
 import {
+  testKeystore2Base64,
+  testKeystoreBase64,
+  testPKCS12KeystoreBase64,
+  testPKCS12KeystoreEmptyPasswordBase64,
+} from './fixtures-base64-data';
+import {
   AndroidAppBuildCredentialsFragment,
   AndroidFcmFragment,
   AndroidFcmVersion,
@@ -7,15 +13,10 @@ import {
   AppFragment,
   CommonAndroidAppCredentialsFragment,
   GoogleServiceAccountKeyFragment,
+  Role,
 } from '../../graphql/generated';
 import * as AndroidGraphqlClient from '../android/api/GraphqlClient';
 import { Keystore } from '../android/credentials';
-import {
-  testKeystore2Base64,
-  testKeystoreBase64,
-  testPKCS12KeystoreBase64,
-  testPKCS12KeystoreEmptyPasswordBase64,
-} from './fixtures-base64-data';
 
 const now = new Date();
 
@@ -54,7 +55,20 @@ export const testPKCS12EmptyPasswordKeystore: Keystore = {
 export const testAppFragment: AppFragment = {
   id: 'test-app-id',
   fullName: '@testuser/testapp',
+  name: 'testapp',
   slug: 'testapp',
+  ownerAccount: {
+    id: 'test-account-id',
+    name: 'testuser',
+    users: [
+      {
+        role: Role.Owner,
+        actor: {
+          id: 'test-user-id',
+        },
+      },
+    ],
+  },
 };
 
 export const testLegacyAndroidFcmFragment: AndroidFcmFragment = {
@@ -138,6 +152,7 @@ export function getNewAndroidApiMock(): { [key in keyof typeof AndroidGraphqlCli
     updateAndroidAppCredentialsAsync: jest.fn(),
     updateAndroidAppBuildCredentialsAsync: jest.fn(),
     createAndroidAppBuildCredentialsAsync: jest.fn(),
+    setDefaultAndroidAppBuildCredentialsAsync: jest.fn(),
     getDefaultAndroidAppBuildCredentialsAsync: jest.fn(),
     getAndroidAppBuildCredentialsByNameAsync: jest.fn(),
     createOrUpdateAndroidAppBuildCredentialsByNameAsync: jest.fn(),
